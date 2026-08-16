@@ -1,0 +1,147 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── MASTER DATABASE MODELS ───────────────────────────
+
+model SuperAdmin {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  password     String
+  refreshToken String?
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("super_admins")
+}
+
+model Company {
+  id            String        @id @default(uuid())
+  name          String
+  slug          String        @unique
+  databaseUrl   String
+  logoUrl       String?
+  status        CompanyStatus @default(ACTIVE)
+  ceoName       String
+  ceoEmail      String
+  plan          PlanType      @default(FREE)
+  planExpiresAt DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  modules       CompanyModule[]
+  backupLogs    BackupLog[]
+  subscriptions Subscription[]
+
+  @@map("companies")
+}
+
+model Module {
+  id          String   @id @default(uuid())
+  name        String
+  key         String   @unique
+  description String?
+  icon        String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  companies   CompanyModule[]
+
+  @@map("modules")
+}
+
+model CompanyModule {
+  id        String   @id @default(uuid())
+  companyId String
+  moduleId  String
+  enabledAt DateTime @default(now())
+
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  module    Module   @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, moduleId])
+  @@map("company_modules")
+}
+
+model Subscription {
+  id        String             @id @default(uuid())
+  companyId String
+  plan      PlanType
+  status    SubscriptionStatus @default(ACTIVE)
+  startDate DateTime
+  endDate   DateTime?
+  createdAt DateTime           @default(now())
+
+  company   Company            @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model BackupLog {
+  id          String   @id @default(uuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id])
+  type        String
+  status      String
+  fileKey     String?
+  fileUrl     String?
+  fileSizeMb  Float?
+  errorMsg    String?
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@map("backup_logs")
+}
+
+model SystemLog {
+  id          String   @id @default(uuid())
+  action      String
+  performedBy String
+  ipAddress   String?
+  details     String?
+  createdAt   DateTime @default(now())
+
+  @@map("system_logs")
+}
+
+// ─── ENUMS ────────────────────────────────────────────
+
+enum CompanyStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum PlanType {
+  FREE
+  STARTER
+  PROFESSIONAL
+  ENTERPRISE
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum BackupType {
+  DAILY
+  WEEKLY
+  MONTHLY
+  MANUAL
+}
+
+enum BackupStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}

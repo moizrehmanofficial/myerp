@@ -1,0 +1,358 @@
+'use client'
+
+import { useEffect, useState } from 'react'
+import axios from 'axios'
+import toast from 'react-hot-toast'
+import TenantLayout from '@/components/layout/TenantLayout'
+import ExportButton from '@/components/common/ExportButton'
+import Pagination from '@/components/common/Pagination'
+
+export default function SuppliersPage() {
+  const [suppliers, setSuppliers] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [showModal, setShowModal] = useState(false)
+  const [editingSupplier, setEditingSupplier] = useState<any>(null)
+  const [submitting, setSubmitting] = useState(false)
+  const [subdomain, setSubdomain] = useState('')
+  const [page, setPage] = useState(1)
+  const [limit, setLimit] = useState(25)
+  const [meta, setMeta] = useState<any>(null)
+
+  const [form, setForm] = useState({
+    name: '', email: '', phone: '', address: '',
+  })
+
+  useEffect(() => {
+    const host = window.location.hostname
+    const parts = host.split('.')
+    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    setSubdomain(sub)
+    fetchSuppliers(sub)
+  }, [])
+
+  function getApi(sub: string) {
+    return {
+      get: (url: string) => axios.get(
+        `${process.env.NEXT_PUBLIC_API_URL}${url}`,
+        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
+      ),
+      post: (url: string, data: any) => axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}${url}`, data,
+        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
+      ),
+      put: (url: string, data: any) => axios.put(
+        `${process.env.NEXT_PUBLIC_API_URL}${url}`, data,
+        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
+      ),
+      delete: (url: string) => axios.delete(
+        `${process.env.NEXT_PUBLIC_API_URL}${url}`,
+        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
+      ),
+    }
+  }
+
+  async function fetchSuppliers(sub: string, searchTerm = '', p = 1, l = 25) {
+    try {
+      const res = await getApi(sub).get(`/erp/suppliers?search=${searchTerm}&page=${p}&limit=${l}`)
+      setSuppliers(res.data.data)
+      setMeta(res.data.meta)
+    } catch {
+      toast.error('Failed to load suppliers')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function openCreate() {
+    setEditingSupplier(null)
+    setForm({ name: '', email: '', phone: '', address: '' })
+    setShowModal(true)
+  }
+
+  function openEdit(supplier: any) {
+    setEditingSupplier(supplier)
+    setForm({
+      name: supplier.name || '',
+      email: supplier.email || '',
+      phone: supplier.phone || '',
+      address: supplier.address || '',
+    })
+    setShowModal(true)
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!form.name) { toast.error('Supplier name is required'); return }
+    setSubmitting(true)
+    try {
+      if (editingSupplier) {
+        await getApi(subdomain).put(`/erp/suppliers/${editingSupplier.id}`, form)
+        toast.success('Supplier updated')
+      } else {
+        await getApi(subdomain).post('/erp/suppliers', form)
+        toast.success('Supplier created')
+      }
+      setShowModal(false)
+      fetchSuppliers(subdomain, search, page, limit)
+    } catch {
+      toast.error('Failed to save supplier')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  async function handleDelete(id: string) {
+    if (!confirm('Delete this supplier?')) return
+    try {
+      await getApi(subdomain).delete(`/erp/suppliers/${id}`)
+      toast.success('Supplier deleted')
+      fetchSuppliers(subdomain, search, page, limit)
+    } catch {
+      toast.error('Failed to delete supplier')
+    }
+  }
+
+  return (
+    <TenantLayout
+      title="Suppliers"
+      subtitle="Manage your supplier list"
+      requiredModule="contacts"
+      headerRight={
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <ExportButton
+            data={suppliers}
+            filename={`suppliers-${subdomain}`}
+            title="Suppliers Report"
+            subtitle={`${subdomain} ERP • ${new Date().toLocaleDateString()}`}
+            columns={[
+              { header: 'Name', value: (r) => r.name, width: 25 },
+              { header: 'Email', value: (r) => r.email || '', width: 28 },
+              { header: 'Phone', value: (r) => r.phone || '', width: 18 },
+              { header: 'Address', value: (r) => r.address || '', width: 30 },
+              { header: 'Balance (PKR)', value: (r) => parseFloat(r.balance || 0).toFixed(2), width: 18 },
+            ]}
+          />
+          <button onClick={() => setShowModal(true)} style={{
+            padding: '10px 18px', background: '#1E3A5F',
+            color: '#fff', border: 'none', borderRadius: '10px',
+            fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+            fontFamily: 'Inter, sans-serif',
+          }}>➕ Add Supplier</button>
+        </div>
+      }
+    >
+      {/* Search */}
+      <form
+        onSubmit={(e) => { e.preventDefault(); setPage(1); setLoading(true); fetchSuppliers(subdomain, search, 1, limit) }}
+        style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}
+      >
+        <input
+          type="text" value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name, email or phone..."
+          style={{
+            flex: 1, padding: '10px 16px',
+            border: '1.5px solid #E2E8F0', borderRadius: '10px',
+            fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
+          }}
+        />
+        <button type="submit" style={{
+          padding: '10px 20px', background: '#1E3A5F',
+          color: '#fff', border: 'none', borderRadius: '10px',
+          fontSize: '13px', fontWeight: 600, cursor: 'pointer',
+          fontFamily: 'Inter, sans-serif',
+        }}>Search</button>
+      </form>
+
+      {/* Table */}
+      {loading ? (
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
+          <div style={{
+            width: '40px', height: '40px',
+            border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F',
+            borderRadius: '50%', animation: 'spin 0.7s linear infinite',
+          }} />
+        </div>
+      ) : suppliers.length === 0 ? (
+        <div style={{
+          background: '#fff', borderRadius: '16px',
+          border: '1px solid #E2E8F0', padding: '80px', textAlign: 'center',
+        }}>
+          <div style={{ fontSize: '48px', marginBottom: '12px' }}>🏭</div>
+          <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>
+            No suppliers yet
+          </h3>
+          <p style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '20px' }}>
+            Add your first supplier to get started
+          </p>
+          <button onClick={openCreate} style={{
+            padding: '10px 24px', background: '#1E3A5F',
+            color: '#fff', border: 'none', borderRadius: '10px',
+            fontSize: '14px', fontWeight: 600, cursor: 'pointer',
+            fontFamily: 'Inter, sans-serif',
+          }}>➕ Add First Supplier</button>
+        </div>
+      ) : (
+        <div style={{
+          background: '#fff', borderRadius: '16px',
+          border: '1px solid #E2E8F0', overflow: 'hidden',
+        }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                {['Supplier', 'Email', 'Phone', 'Address', 'Balance', 'Actions'].map((h) => (
+                  <th key={h} style={{
+                    padding: '12px 16px', textAlign: 'left',
+                    fontSize: '12px', fontWeight: 600,
+                    color: '#64748B', textTransform: 'uppercase',
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {suppliers.map((s, i) => (
+                <tr key={s.id} style={{
+                  borderBottom: i < suppliers.length - 1 ? '1px solid #F1F5F9' : 'none',
+                }}
+                  onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
+                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                >
+                  <td style={{ padding: '14px 16px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <div style={{
+                        width: '36px', height: '36px', borderRadius: '50%',
+                        background: '#FFF7ED', display: 'flex',
+                        alignItems: 'center', justifyContent: 'center',
+                        fontSize: '16px', fontWeight: 700, color: '#EA580C',
+                      }}>{s.name?.charAt(0)}</div>
+                      <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{s.name}</span>
+                    </div>
+                  </td>
+                  <td style={{ padding: '14px 16px', fontSize: '13px', color: '#64748B' }}>{s.email || '—'}</td>
+                  <td style={{ padding: '14px 16px', fontSize: '13px', color: '#64748B' }}>{s.phone || '—'}</td>
+                  <td style={{ padding: '14px 16px', fontSize: '13px', color: '#64748B' }}>{s.address || '—'}</td>
+                  <td style={{ padding: '14px 16px' }}>
+                    <span style={{
+                      fontSize: '13px', fontWeight: 600,
+                      color: parseFloat(s.balance) > 0 ? '#DC2626' : '#16A34A',
+                    }}>
+                      PKR {parseFloat(s.balance || 0).toLocaleString()}
+                    </span>
+                  </td>
+                  <td style={{ padding: '14px 16px' }}>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button onClick={() => openEdit(s)} style={{
+                        padding: '6px 12px', background: '#EFF6FF',
+                        color: '#1D4ED8', border: '1px solid #BFDBFE',
+                        borderRadius: '8px', fontSize: '12px',
+                        fontWeight: 600, cursor: 'pointer',
+                        fontFamily: 'Inter, sans-serif',
+                      }}>Edit</button>
+                      <button onClick={() => handleDelete(s.id)} style={{
+                        padding: '6px 12px', background: '#FEF2F2',
+                        color: '#DC2626', border: '1px solid #FECACA',
+                        borderRadius: '8px', fontSize: '12px',
+                        fontWeight: 600, cursor: 'pointer',
+                        fontFamily: 'Inter, sans-serif',
+                      }}>Delete</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {meta && (
+        <Pagination
+          page={page}
+          totalPages={meta.totalPages}
+          total={meta.total}
+          limit={limit}
+          onPageChange={(p) => {
+            setPage(p)
+            setLoading(true)
+            fetchSuppliers(subdomain, search, p, limit)
+          }}
+          onLimitChange={(l) => {
+            setLimit(l)
+            setPage(1)
+            setLoading(true)
+            fetchSuppliers(subdomain, search, 1, l)
+          }}
+        />
+      )}
+
+      {/* Modal */}
+      {showModal && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200,
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: '20px', padding: '32px',
+            width: '100%', maxWidth: '480px',
+            boxShadow: '0 25px 60px rgba(0,0,0,0.15)',
+          }}>
+            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '24px' }}>
+              {editingSupplier ? '✏️ Edit Supplier' : '➕ Add New Supplier'}
+            </h3>
+
+            <form onSubmit={handleSubmit}>
+              {[
+                { label: 'Supplier Name *', key: 'name', type: 'text', placeholder: 'e.g. Ali Traders' },
+                { label: 'Email', key: 'email', type: 'email', placeholder: 'supplier@email.com' },
+                { label: 'Phone', key: 'phone', type: 'text', placeholder: '+92 300 0000000' },
+                { label: 'Address', key: 'address', type: 'text', placeholder: 'City, Country' },
+              ].map((field) => (
+                <div key={field.key} style={{ marginBottom: '16px' }}>
+                  <label style={{
+                    display: 'block', fontSize: '13px',
+                    fontWeight: 600, color: '#374151', marginBottom: '6px',
+                  }}>{field.label}</label>
+                  <input
+                    type={field.type}
+                    value={(form as any)[field.key]}
+                    onChange={(e) => setForm({ ...form, [field.key]: e.target.value })}
+                    placeholder={field.placeholder}
+                    style={{
+                      width: '100%', padding: '10px 14px',
+                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
+                      fontSize: '14px', outline: 'none',
+                      fontFamily: 'Inter, sans-serif',
+                    }}
+                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
+                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
+                  />
+                </div>
+              ))}
+
+              <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
+                <button type="button" onClick={() => setShowModal(false)} style={{
+                  flex: 1, padding: '12px', background: '#F1F5F9',
+                  color: '#64748B', border: 'none', borderRadius: '10px',
+                  fontSize: '14px', fontWeight: 600, cursor: 'pointer',
+                  fontFamily: 'Inter, sans-serif',
+                }}>Cancel</button>
+                <button type="submit" disabled={submitting} style={{
+                  flex: 1, padding: '12px',
+                  background: submitting ? '#94A3B8' : '#1E3A5F',
+                  color: '#fff', border: 'none', borderRadius: '10px',
+                  fontSize: '14px', fontWeight: 600,
+                  cursor: submitting ? 'not-allowed' : 'pointer',
+                  fontFamily: 'Inter, sans-serif',
+                }}>
+                  {submitting ? 'Saving...' : (editingSupplier ? 'Update' : 'Create')}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </TenantLayout>
+  )
+}

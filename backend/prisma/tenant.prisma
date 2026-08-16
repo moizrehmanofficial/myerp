@@ -1,0 +1,516 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/@prisma/tenant-client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── USERS & AUTH ─────────────────────────────────────
+
+model User {
+  id           String     @id @default(uuid())
+  name         String
+  email        String     @unique
+  phone        String?
+  password     String
+  refreshToken String?
+  roleId       String?
+  status       UserStatus @default(ACTIVE)
+  isOwner      Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  role         Role?      @relation(fields: [roleId], references: [id])
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String
+  description String?
+  isDefault   Boolean          @default(false)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id        String           @id @default(uuid())
+  module    String
+  action    String
+  createdAt DateTime         @default(now())
+
+  roles     RolePermission[]
+
+  @@unique([module, action])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+  createdAt    DateTime   @default(now())
+
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+// ─── CUSTOMERS & SUPPLIERS ────────────────────────────
+
+model Customer {
+  id          String    @id @default(uuid())
+  name        String
+  email       String?
+  phone       String?
+  address     String?
+  balance     Float     @default(0)
+  isDeleted   Boolean   @default(false)
+  deletedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  invoices    Invoice[]
+  payments    Payment[]
+
+  @@map("customers")
+}
+
+model Supplier {
+  id             String          @id @default(uuid())
+  name           String
+  email          String?
+  phone          String?
+  address        String?
+  balance        Float           @default(0)
+  isDeleted      Boolean         @default(false)
+  deletedAt      DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+  payments       Payment[]
+
+  @@map("suppliers")
+}
+
+// ─── PRODUCTS & INVENTORY ─────────────────────────────
+
+model Category {
+  id        String    @id @default(uuid())
+  name      String
+  createdAt DateTime  @default(now())
+
+  products  Product[]
+
+  @@map("categories")
+}
+
+model Brand {
+  id        String    @id @default(uuid())
+  name      String
+  createdAt DateTime  @default(now())
+
+  products  Product[]
+
+  @@map("brands")
+}
+
+model Product {
+  id               String                @id @default(uuid())
+  sku              String                @unique
+  barcode          String?
+  name             String
+  categoryId       String?
+  brandId          String?
+  unit             String                @default("pcs")
+  purchasePrice    Float                 @default(0)
+  salePrice        Float                 @default(0)
+  stock            Float                 @default(0)
+  minStock         Float                 @default(0)
+  maxStock         Float                 @default(0)
+  status           ProductStatus         @default(ACTIVE)
+  isDeleted        Boolean               @default(false)
+  deletedAt        DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  category         Category?             @relation(fields: [categoryId], references: [id])
+  brand            Brand?                @relation(fields: [brandId], references: [id])
+  inventoryItems   InventoryTransaction[]
+  invoiceItems     InvoiceItem[]
+  purchaseItems    PurchaseItem[]
+
+  @@map("products")
+}
+
+model InventoryTransaction {
+  id          String          @id @default(uuid())
+  productId   String
+  type        TransactionType
+  quantity    Float
+  reference   String?
+  notes       String?
+  createdAt   DateTime        @default(now())
+
+  product     Product         @relation(fields: [productId], references: [id])
+
+  @@map("inventory_transactions")
+}
+
+// ─── PURCHASE ─────────────────────────────────────────
+
+model PurchaseOrder {
+  id           String         @id @default(uuid())
+  orderNumber  String         @unique
+  supplierId   String
+  status       PurchaseStatus @default(PENDING)
+  totalAmount  Float          @default(0)
+  notes        String?
+  isDeleted    Boolean        @default(false)
+  deletedAt    DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  supplier     Supplier       @relation(fields: [supplierId], references: [id])
+  items        PurchaseItem[]
+
+  @@map("purchase_orders")
+}
+
+model PurchaseItem {
+  id              String        @id @default(uuid())
+  purchaseOrderId String
+  productId       String
+  quantity        Float
+  unitPrice       Float
+  totalPrice      Float
+  createdAt       DateTime      @default(now())
+
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  product         Product       @relation(fields: [productId], references: [id])
+
+  @@map("purchase_items")
+}
+
+// ─── SALES & INVOICES ─────────────────────────────────
+
+model Invoice {
+  id            String        @id @default(uuid())
+  invoiceNumber String        @unique
+  customerId    String
+  status        InvoiceStatus @default(DRAFT)
+  paymentStatus PaymentStatus @default(UNPAID)
+  subtotal      Float         @default(0)
+  discount      Float         @default(0)
+  tax           Float         @default(0)
+  totalAmount   Float         @default(0)
+  paidAmount    Float         @default(0)
+  dueAmount     Float         @default(0)
+  dueDate       DateTime?
+  notes         String?
+  isDeleted     Boolean       @default(false)
+  deletedAt     DateTime?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  customer      Customer      @relation(fields: [customerId], references: [id])
+  items         InvoiceItem[]
+  payments      Payment[]
+
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id          String   @id @default(uuid())
+  invoiceId   String
+  productId   String
+  quantity    Float
+  unitPrice   Float
+  discount    Float    @default(0)
+  totalPrice  Float
+  createdAt   DateTime @default(now())
+
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  product     Product  @relation(fields: [productId], references: [id])
+
+  @@map("invoice_items")
+}
+
+model Payment {
+  id          String        @id @default(uuid())
+  invoiceId   String?
+  customerId  String?
+  supplierId  String?
+  type        PaymentType
+  method      PaymentMethod @default(CASH)
+  amount      Float
+  reference   String?
+  notes       String?
+  createdAt   DateTime      @default(now())
+
+  invoice     Invoice?      @relation(fields: [invoiceId], references: [id])
+  customer    Customer?     @relation(fields: [customerId], references: [id])
+  supplier    Supplier?     @relation(fields: [supplierId], references: [id])
+
+  @@map("payments")
+}
+
+// ─── FINANCE ──────────────────────────────────────────
+
+model ChartOfAccount {
+  id            String         @id @default(uuid())
+  code          String         @unique
+  name          String
+  type          AccountType
+  parentId      String?
+  balance       Float          @default(0)
+  isActive      Boolean        @default(true)
+  createdAt     DateTime       @default(now())
+
+  parent        ChartOfAccount?  @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children      ChartOfAccount[] @relation("AccountHierarchy")
+  journalItems  JournalItem[]
+
+  @@map("chart_of_accounts")
+}
+
+model JournalEntry {
+  id          String        @id @default(uuid())
+  entryNumber String        @unique
+  description String
+  totalDebit  Float
+  totalCredit Float
+  reference   String?
+  createdAt   DateTime      @default(now())
+
+  items       JournalItem[]
+
+  @@map("journal_entries")
+}
+
+model JournalItem {
+  id             String         @id @default(uuid())
+  journalEntryId String
+  accountId      String
+  debit          Float          @default(0)
+  credit         Float          @default(0)
+  description    String?
+  createdAt      DateTime       @default(now())
+
+  journalEntry   JournalEntry   @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  account        ChartOfAccount @relation(fields: [accountId], references: [id])
+
+  @@map("journal_items")
+}
+
+// ─── HR ───────────────────────────────────────────────
+
+model Employee {
+  id           String         @id @default(uuid())
+  employeeCode String         @unique
+  name         String
+  email        String?
+  phone        String?
+  cnic         String?
+  department   String?
+  designation  String?
+  joiningDate  DateTime?
+  salary       Float          @default(0)
+  status       EmployeeStatus @default(ACTIVE)
+  isDeleted    Boolean        @default(false)
+  deletedAt    DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  attendance   Attendance[]
+  leaves       Leave[]
+  payrolls     Payroll[]
+
+  @@map("employees")
+}
+
+model Attendance {
+  id         String           @id @default(uuid())
+  employeeId String
+  date       DateTime
+  checkIn    DateTime?
+  checkOut   DateTime?
+  status     AttendanceStatus @default(PRESENT)
+  createdAt  DateTime         @default(now())
+
+  employee   Employee         @relation(fields: [employeeId], references: [id])
+
+  @@map("attendance")
+}
+
+model Leave {
+  id         String      @id @default(uuid())
+  employeeId String
+  type       String
+  startDate  DateTime
+  endDate    DateTime
+  reason     String?
+  status     LeaveStatus @default(PENDING)
+  createdAt  DateTime    @default(now())
+
+  employee   Employee    @relation(fields: [employeeId], references: [id])
+
+  @@map("leaves")
+}
+
+model Payroll {
+  id           String        @id @default(uuid())
+  employeeId   String
+  month        Int
+  year         Int
+  basicSalary  Float
+  allowances   Float         @default(0)
+  deductions   Float         @default(0)
+  tax          Float         @default(0)
+  netSalary    Float
+  status       PayrollStatus @default(PENDING)
+  createdAt    DateTime      @default(now())
+
+  employee     Employee      @relation(fields: [employeeId], references: [id])
+
+  @@map("payroll")
+}
+
+// ─── SYSTEM ───────────────────────────────────────────
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  module    String
+  recordId  String?
+  ipAddress String?
+  device    String?
+  browser   String?
+  details   String?
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
+
+model Setting {
+  id        String   @id @default(uuid())
+  key       String   @unique
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  userId    String?
+  createdAt DateTime @default(now())
+
+  @@map("notifications")
+}
+
+// ─── ENUMS ────────────────────────────────────────────
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum TransactionType {
+  IN
+  OUT
+  ADJUSTMENT
+}
+
+enum PurchaseStatus {
+  PENDING
+  APPROVED
+  RECEIVED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING
+  PAID
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PARTIAL
+  PAID
+  OVERDUE
+}
+
+enum PaymentType {
+  RECEIVED
+  MADE
+}
+
+enum PaymentMethod {
+  CASH
+  BANK
+  CHEQUE
+  ONLINE
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  INACTIVE
+  TERMINATED
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  HALF_DAY
+  LEAVE
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum PayrollStatus {
+  PENDING
+  PROCESSED
+  PAID
+}
