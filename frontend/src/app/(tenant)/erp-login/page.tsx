@@ -1,11 +1,19 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import toast, { Toaster } from 'react-hot-toast'
 import axios from 'axios'
 
 export default function TenantLoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <TenantLoginForm />
+    </Suspense>
+  )
+}
+
+function TenantLoginForm() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const [email, setEmail] = useState('')
