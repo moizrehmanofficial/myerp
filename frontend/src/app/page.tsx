@@ -12,7 +12,8 @@ export default function Home() {
     const subdomain = parts[0]
 
     const isTenantSubdomain =
-      parts.length >= 2 &&
+      parts.length >= 3 &&
+      !host.includes('vercel.app') &&
       subdomain !== 'localhost' &&
       subdomain !== 'www' &&
       subdomain !== 'admin'

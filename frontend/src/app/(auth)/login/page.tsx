@@ -19,7 +19,8 @@ export default function LoginPage() {
     const parts = host.split('.')
     const subdomain = parts[0]
     const isTenant =
-      parts.length >= 2 &&
+      parts.length >= 3 &&
+      !host.includes('vercel.app') &&
       subdomain !== 'localhost' &&
       subdomain !== 'www' &&
       subdomain !== 'admin'
