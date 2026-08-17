@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 export default function ManufacturingPage() {
   const router = useRouter()
@@ -29,9 +30,7 @@ export default function ManufacturingPage() {
   ])
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchData(sub)
   }, [])

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 const ACCOUNT_TYPES = ['ASSET', 'LIABILITY', 'EQUITY', 'INCOME', 'EXPENSE']
 
@@ -25,9 +26,7 @@ export default function ChartOfAccountsPage() {
   const [form, setForm] = useState({ code: '', name: '', type: 'ASSET', parentId: '' })
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchAccounts(sub)
   }, [])

@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 type DiscountType = 'fixed' | 'percent'
 type TaxType = 'fixed' | 'percent'
@@ -31,9 +32,7 @@ export default function CreateSalesOrderPage() {
   ])
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchDropdowns(sub)
   }, [])

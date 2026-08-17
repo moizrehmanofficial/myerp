@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 const ALL_MODULES = [
   { key: 'contacts',      label: 'Customers & Suppliers' },
@@ -76,9 +77,7 @@ export default function UsersRolesPage() {
   const [savingRole, setSavingRole] = useState(false)
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     const cached = sessionStorage.getItem(`tenant_user_${sub}`)
     if (cached) {

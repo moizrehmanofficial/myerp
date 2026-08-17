@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 const STATUS_STYLES: Record<string, { bg: string; color: string; border: string }> = {
   PENDING:  { bg: '#FFF7ED', color: '#EA580C', border: '#FED7AA' },
@@ -52,9 +53,7 @@ export default function LeavePage() {
   const [rejectReason, setRejectReason] = useState('')
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchAll(sub)
   }, [])

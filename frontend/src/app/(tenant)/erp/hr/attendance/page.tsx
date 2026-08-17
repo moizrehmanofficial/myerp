@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 const STATUS_OPTIONS = ['PRESENT', 'ABSENT', 'HALF_DAY', 'LEAVE']
 
@@ -29,9 +30,7 @@ export default function AttendancePage() {
   const [attendanceMap, setAttendanceMap] = useState<Record<string, string>>({})
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchAttendance(sub, month, year)
   }, [month, year])

@@ -5,6 +5,7 @@ import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 export default function PayrollPage() {
   const [data, setData] = useState<any>(null)
@@ -20,9 +21,7 @@ export default function PayrollPage() {
   const [year, setYear] = useState(now.getFullYear())
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchPayroll(sub, now.getMonth() + 1, now.getFullYear())
   }, [])

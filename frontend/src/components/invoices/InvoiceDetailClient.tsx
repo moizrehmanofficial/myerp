@@ -1,6 +1,7 @@
 "use client"
 
 import TenantLayout from '@/components/layout/TenantLayout'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 import axios from 'axios'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
@@ -16,9 +17,7 @@ export default function InvoiceDetailClient({ id }: { id: string }) {
   const [paying, setPaying] = useState(false)
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchInvoice(sub)
   }, [id])
