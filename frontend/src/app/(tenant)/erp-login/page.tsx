@@ -1,12 +1,13 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import toast, { Toaster } from 'react-hot-toast'
 import axios from 'axios'
 
 export default function TenantLoginPage() {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
@@ -16,10 +17,18 @@ export default function TenantLoginPage() {
   const [companyLogo, setCompanyLogo] = useState('')
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    if (parts.length >= 2) {
-      const sub = parts[0]
+    const queryCompany = searchParams.get('company')
+    let sub = queryCompany
+
+    if (!sub) {
+      const host = window.location.hostname
+      const parts = host.split('.')
+      if (parts.length >= 3 && !host.includes('vercel.app')) {
+        sub = parts[0]
+      }
+    }
+
+    if (sub) {
       setSubdomain(sub)
       setCompanyName(sub.charAt(0).toUpperCase() + sub.slice(1))
 
@@ -30,7 +39,7 @@ export default function TenantLoginPage() {
         if (res.data.data?.name) setCompanyName(res.data.data.name)
       }).catch(() => {})
     }
-  }, [])
+  }, [searchParams])
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault()
@@ -40,10 +49,11 @@ export default function TenantLoginPage() {
       return
     }
 
-    // Get subdomain fresh from hostname
+    // Get subdomain: query param first, then hostname, then state fallback
+    const queryCompany = searchParams.get('company')
     const host = window.location.hostname
     const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : subdomain
+    const sub = queryCompany || (parts.length >= 3 && !host.includes('vercel.app') ? parts[0] : subdomain)
 
     setLoading(true)
     try {
