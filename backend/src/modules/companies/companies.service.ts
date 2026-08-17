@@ -159,12 +159,14 @@ await this.tenantService.seedTenantData(
       return newCompany;
     });
 
+    const frontendUrl = process.env.FRONTEND_URL || 'https://myerp-frontend.vercel.app';
+
     return {
       success: true,
       message: 'Company ERP created successfully',
       data: {
         ...company,
-        erpUrl: `${dto.slug}.myerp.com`,
+        erpUrl: `${frontendUrl}/erp-login?company=${dto.slug}`,
         ceoEmail: dto.ceoEmail,
         modulesEnabled: modules.length,
       },
