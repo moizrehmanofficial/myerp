@@ -86,10 +86,12 @@ export class TenantAuthService {
 
     // Set cookies for cross-site tenant auth requests.
     // SameSite=None is required when frontend and API are served from different domains/subdomains.
+    const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+
     const cookieOptions = {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none' as const,
+      secure: isProduction,
+      sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
       path: '/',
     };
 

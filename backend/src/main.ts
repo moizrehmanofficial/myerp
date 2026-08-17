@@ -11,24 +11,23 @@ async function bootstrap() {
 
   const configService = app.get(ConfigService);
   const port = configService.get<number>('PORT') || 3001;
+  const nodeEnv = configService.get<string>('NODE_ENV') || 'development';
+  const isProduction = nodeEnv === 'production';
 
   // ── Security ──────────────────────────────────────────
-  app.use(helmet());
+  app.use(helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  }));
 
   // ── CORS ──────────────────────────────────────────────
   app.enableCors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (Postman, mobile apps)
       if (!origin) return callback(null, true);
-      // Allow any localhost origin including subdomains
       if (origin.includes('localhost')) return callback(null, true);
-      // Allow myerp.com subdomains in production
       if (origin.includes('myerp.com')) return callback(null, true);
-      // Allow Vercel deployments (production + preview) for this project
-      if (origin.includes('myerp-frontend') && origin.includes('vercel.app')) {
-        return callback(null, true);
-      }
-      callback(new Error('Not allowed by CORS'));
+      if (origin.includes('vercel.app')) return callback(null, true);
+      if (origin.includes('onrender.com')) return callback(null, true);
+      callback(new Error(`CORS blocked: ${origin}`));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -42,7 +41,7 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: false,
       transform: true,
     }),
   );
@@ -50,8 +49,8 @@ async function bootstrap() {
   // ── Global Prefix ─────────────────────────────────────
   app.setGlobalPrefix('api');
 
-  await app.listen(port);
-  console.log(`🚀 MyERP Backend running on http://localhost:${port}/api`);
+  await app.listen(port, '0.0.0.0');
+  console.log(`🚀 MyERP Backend running on port ${port} [${nodeEnv}]`);
 }
 
 bootstrap();

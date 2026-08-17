@@ -61,10 +61,12 @@ export class AuthService {
     });
 
     // ── Set HttpOnly Cookies ───────────────────────────
+    const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+
     const cookieOptions = {
       httpOnly: true,
-      secure: true,
-      sameSite: 'none' as const,
+      secure: isProduction,
+      sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
       path: '/',
     };
 
