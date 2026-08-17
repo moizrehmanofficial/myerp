@@ -5,6 +5,7 @@ import axios from 'axios'
 import toast from 'react-hot-toast'
 import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 const MODULES = ['contacts', 'products', 'inventory', 'purchase', 'sales', 'invoices', 'finance', 'hr', 'payroll', 'users', 'auth', 'manufacturing', 'settings']
 const ACTIONS = ['CREATED', 'UPDATED', 'DELETED', 'LOGIN', 'EXPORTED', 'APPROVED']
@@ -36,9 +37,7 @@ export default function AuditLogPage() {
   })
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchLogs(sub, 1, filters)
   }, [])

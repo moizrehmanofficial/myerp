@@ -1,14 +1,14 @@
 'use client'
 
+import { getTenantSlug } from '@/lib/getTenantSlug'
+
 export type PermissionAction = 'read' | 'write' | 'modify' | 'delete' | 'print' | 'export' | 'approve'
 
 export function usePermission() {
   function getPermissions(moduleKey: string): Record<PermissionAction, boolean> {
     if (typeof window === 'undefined') return getEmpty()
 
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
 
     const cached = sessionStorage.getItem(`tenant_user_${sub}`)
     if (!cached) return getEmpty()

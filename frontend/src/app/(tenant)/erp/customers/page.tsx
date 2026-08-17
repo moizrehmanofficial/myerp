@@ -7,6 +7,7 @@ import TenantLayout from '@/components/layout/TenantLayout'
 import { usePermission } from '@/hooks/usePermission'
 import ExportButton from '@/components/common/ExportButton'
 import Pagination from '@/components/common/Pagination'
+import { getTenantSlug } from '@/lib/getTenantSlug'
 
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<any[]>([])
@@ -26,9 +27,7 @@ export default function CustomersPage() {
   })
 
   useEffect(() => {
-    const host = window.location.hostname
-    const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+    const sub = getTenantSlug()
     setSubdomain(sub)
     fetchCustomers(sub)
   }, [])
