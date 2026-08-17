@@ -31,7 +31,20 @@ export default function TenantLayout({
   useEffect(() => {
     const host = window.location.hostname
     const parts = host.split('.')
-    const sub = parts.length >= 2 ? parts[0] : 'localhost'
+
+    // Priority: saved slug from login > real subdomain > 'localhost'
+    let sub = sessionStorage.getItem('tenant_slug_current') || ''
+    if (!sub) {
+      if (parts.length >= 3 && !host.includes('vercel.app')) {
+        sub = parts[0]
+      } else if (host === 'localhost' || host === '127.0.0.1') {
+        sub = 'localhost'
+      } else if (parts.length === 2 && parts[1] === 'localhost') {
+        sub = parts[0]
+      } else {
+        sub = 'localhost'
+      }
+    }
     setSubdomain(sub)
 
     const cachedUser = sessionStorage.getItem(`tenant_user_${sub}`)
