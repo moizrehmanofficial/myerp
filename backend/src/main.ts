@@ -24,6 +24,10 @@ async function bootstrap() {
       if (origin.includes('localhost')) return callback(null, true);
       // Allow myerp.com subdomains in production
       if (origin.includes('myerp.com')) return callback(null, true);
+      // Allow Vercel deployments (production + preview) for this project
+      if (origin.includes('myerp-frontend') && origin.includes('vercel.app')) {
+        return callback(null, true);
+      }
       callback(new Error('Not allowed by CORS'));
     },
     credentials: true,
