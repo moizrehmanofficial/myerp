@@ -180,8 +180,22 @@ export default function TenantSidebar({ activePath, user, subdomain }: TenantSid
 
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(getInitialOpenGroups)
 
-  function toggleGroup(key: string) {
+    function toggleGroup(key: string) {
     setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  // Preserves ?company= when navigating, so tenant identity isn't
+  // lost on sidebar clicks (Vercel no-domain URLs).
+  function navigate(path: string) {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      const company = params.get('company')
+      if (company) {
+        router.push(`${path}?company=${company}`)
+        return
+      }
+    }
+    router.push(path)
   }
 
   async function handleLogout() {
@@ -252,9 +266,9 @@ export default function TenantSidebar({ activePath, user, subdomain }: TenantSid
           if (group.single) {
             const isActive = activePath === group.path
             return (
-              <button
+                            <button
                 key={group.key}
-                onClick={() => router.push(group.path!)}
+                onClick={() => navigate(group.path!)}
                 style={{
                   width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
                   padding: '9px 10px', borderRadius: '8px', border: 'none',
@@ -335,9 +349,9 @@ export default function TenantSidebar({ activePath, user, subdomain }: TenantSid
                   {group.children?.map((child) => {
                     const isChildActive = activePath === child.path
                     return (
-                      <button
+                                            <button
                         key={child.path}
-                        onClick={() => router.push(child.path)}
+                        onClick={() => navigate(child.path)}
                         style={{
                           width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
                           padding: '7px 10px 7px 14px',
