@@ -76,12 +76,12 @@ function TenantLoginForm() {
         }
       )
 
-      if (res.data.success) {
+            if (res.data.success) {
         toast.success(`Welcome back, ${res.data.data.name}!`)
         sessionStorage.setItem(`tenant_user_${sub}`, JSON.stringify(res.data.data))
         sessionStorage.setItem('tenant_slug_current', sub)
         setTimeout(() => {
-          window.location.href = '/erp/dashboard'
+          window.location.href = `/erp/dashboard?company=${sub}`
         }, 800)
       }
     } catch (err: any) {
