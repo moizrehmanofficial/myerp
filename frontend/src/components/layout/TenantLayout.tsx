@@ -4,6 +4,10 @@ import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { Toaster } from 'react-hot-toast'
 import TenantSidebar from './TenantSidebar'
+import { installTenantAuthInterceptor } from '@/lib/tenantAuthInterceptor'
+
+// Auto-refresh expired login (15 min) for every tenant page
+installTenantAuthInterceptor()
 
 interface TenantLayoutProps {
   children: React.ReactNode

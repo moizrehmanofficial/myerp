@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
 
@@ -10,6 +10,11 @@ export class TenantService {
   constructor(private configService: ConfigService) {}
 
   async getTenantClient(slug: string): Promise<PrismaClient> {
+    // Block SQL injection / random schema names via slug
+    if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+      throw new BadRequestException('Invalid company');
+    }
+
     if (this.tenantClients.has(slug)) {
       const cached = this.tenantClients.get(slug)!;
       const schemaName = `tenant_${slug}`;

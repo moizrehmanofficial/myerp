@@ -10,6 +10,7 @@ import {
   Query,
   Req,
   UnauthorizedException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -62,24 +63,34 @@ export class TenantErpController {
     const token = req.cookies?.access_token;
     if (!token) throw new UnauthorizedException('Not authenticated');
 
+    let payload: any;
     try {
-      return this.jwtService.verify(token, {
+      payload = this.jwtService.verify(token, {
         secret: this.configService.get<string>('JWT_SECRET'),
       });
     } catch {
       throw new UnauthorizedException('Invalid or expired token');
     }
+
+    // Only company (tenant) user tokens are allowed on ERP routes
+    if (payload?.type !== 'tenant_user' || !payload?.slug) {
+      throw new UnauthorizedException('Invalid token type');
+    }
+    return payload;
   }
 
-  // ── Get tenant slug from request or JWT payload ───────
+  // ── Get tenant slug (always from JWT, must match request tenant) ──
   private getSlug(req: any, payload?: any): string {
-    const slug =
-      req.tenant?.slug ||
-      req.headers['x-tenant-slug'] ||
-      payload?.slug;
+    if (!payload?.slug) throw new UnauthorizedException('Not authenticated');
 
-    if (!slug) throw new UnauthorizedException('No tenant found');
-    return slug;
+    // req.tenant is set by TenantMiddleware (company exists + not suspended)
+    if (!req.tenant?.slug) throw new UnauthorizedException('No tenant found');
+
+    // A user of company A must never access company B
+    if (req.tenant.slug !== payload.slug) {
+      throw new ForbiddenException('You do not have access to this company');
+    }
+    return payload.slug;
   }
 
   // ── DASHBOARD ─────────────────────────────────────────

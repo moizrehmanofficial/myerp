@@ -50,6 +50,20 @@ export class TenantAuthController {
     );
   }
 
+  @Post('refresh')
+  @HttpCode(HttpStatus.OK)
+  async refresh(@Req() req: any, @Res({ passthrough: true }) res: any) {
+    const tenant = req.tenant;
+    if (!tenant) {
+      throw new UnauthorizedException('No tenant found');
+    }
+    return this.tenantAuthService.refresh(
+      tenant.slug,
+      req.cookies?.refresh_token,
+      res,
+    );
+  }
+
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: any, @Res({ passthrough: true }) res: any) {

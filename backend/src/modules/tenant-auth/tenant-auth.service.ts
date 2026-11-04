@@ -7,6 +7,7 @@ import { ConfigService } from '@nestjs/config';
 import { TenantService } from '../tenants/tenant.service';
 import { PrismaService } from '../../database/prisma.service';
 import * as bcrypt from 'bcrypt';
+import { createHash } from 'crypto';
 import { TenantAuditService } from '../tenants/tenant-audit.service';
 
 @Injectable()
@@ -76,8 +77,8 @@ export class TenantAuthService {
       expiresIn: '7d' as any,
     });
 
-    // Save hashed refresh token
-    const hashedRefresh = await bcrypt.hash(refreshToken, 10);
+    // Save hashed refresh token (sha256 — bcrypt only reads first 72 chars of a JWT)
+    const hashedRefresh = this.hashToken(refreshToken);
     await client.$queryRawUnsafe(
           `UPDATE "users" SET "refreshToken" = $1, "updatedAt" = NOW() WHERE "id" = $2::uuid`,
       hashedRefresh,
@@ -172,11 +173,89 @@ export class TenantAuthService {
     };
   }
 
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private getCookieOptions() {
+    const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+    return {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
+      path: '/',
+    };
+  }
+
+  async refresh(slug: string, refreshToken: string, res: any) {
+    if (!refreshToken) throw new UnauthorizedException('Session expired, please login again');
+
+    let payload: any;
+    try {
+      payload = this.jwtService.verify(refreshToken, {
+        secret: this.configService.get<string>('REFRESH_TOKEN_SECRET'),
+      });
+    } catch {
+      throw new UnauthorizedException('Session expired, please login again');
+    }
+
+    if (payload.type !== 'tenant_user' || payload.slug !== slug) {
+      throw new UnauthorizedException('Invalid session');
+    }
+
+    const client = await this.tenantService.getTenantClient(slug);
+    const users = await client.$queryRawUnsafe(
+      `SELECT * FROM "users" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1`,
+      payload.sub,
+    ) as any[];
+    const user = users?.[0];
+
+    if (!user || !user.refreshToken || user.status !== 'ACTIVE') {
+      throw new UnauthorizedException('Session expired, please login again');
+    }
+
+    // Token must be the latest one we issued (rotation + logout safe)
+    if (user.refreshToken !== this.hashToken(refreshToken)) {
+      throw new UnauthorizedException('Session expired, please login again');
+    }
+
+    const newPayload = {
+      sub: user.id,
+      email: user.email,
+      name: user.name,
+      slug,
+      type: 'tenant_user',
+      isOwner: user.isOwner,
+      roleId: user.roleId,
+    };
+
+    const accessToken = this.jwtService.sign(newPayload, {
+      secret: this.configService.get<string>('JWT_SECRET'),
+      expiresIn: '15m' as any,
+    });
+    const newRefreshToken = this.jwtService.sign(newPayload, {
+      secret: this.configService.get<string>('REFRESH_TOKEN_SECRET'),
+      expiresIn: '7d' as any,
+    });
+
+    await client.$queryRawUnsafe(
+      `UPDATE "users" SET "refreshToken" = $1, "updatedAt" = NOW() WHERE "id" = $2::uuid`,
+      this.hashToken(newRefreshToken),
+      user.id,
+    );
+
+    const cookieOptions = this.getCookieOptions();
+    res.cookie('access_token', accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
+    res.cookie('refresh_token', newRefreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+
+    return { success: true, message: 'Session refreshed' };
+  }
+
   async logout(slug: string, userId: string, res: any) {
     try {
       const client = await this.tenantService.getTenantClient(slug);
       await client.$queryRawUnsafe(
-        `UPDATE "users" SET "refreshToken" = NULL WHERE "id" = $1`,
+        `UPDATE "users" SET "refreshToken" = NULL WHERE "id" = $1::uuid`,
         userId,
       );
     } catch {}
