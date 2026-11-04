@@ -32,6 +32,7 @@ const SOURCES: Record<string, string> = {
   sale_return: 'Sale return',
   purchase_return: 'Purchase return',
   payroll: 'Salary',
+  opening_balance: 'Opening balance',
   manual: 'Manual',
 }
 

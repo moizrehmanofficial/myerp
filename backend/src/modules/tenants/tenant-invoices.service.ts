@@ -206,6 +206,20 @@ export class TenantInvoicesService {
     );
   }
 
+  private async recordRefund(db: Db, invoice: any, amount: number, method?: string, notes?: string) {
+    if (!(amount > 0)) return;
+    await db.$queryRawUnsafe(
+      `INSERT INTO "payments" ("id", "invoiceId", "customerId", "type", "method", "amount", "reference", "notes")
+       VALUES (gen_random_uuid(), $1::uuid, $2::uuid, 'PAYMENT', $3, $4, $5, $6)`,
+      invoice.id,
+      invoice.customerId,
+      method || 'CASH',
+      round2(amount),
+      invoice.invoiceNumber,
+      notes || `Refund for ${invoice.invoiceNumber}`,
+    );
+  }
+
   async create(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
     await ensureTenantUpgrades(client, slug);
@@ -464,6 +478,8 @@ export class TenantInvoicesService {
         const paidChange = round2(calc.paidAmount - Number(old.paidAmount));
         await postInvoicePayment(tx, result[0], paidChange, body.paymentMethod);
         if (paidChange > 0) await this.recordReceipt(tx, result[0], paidChange, body.paymentMethod, 'Paid amount changed on edit');
+        // Received amount lowered = money given back; keep it in the payment history
+        if (paidChange < 0) await this.recordRefund(tx, result[0], -paidChange, body.paymentMethod, 'Received amount lowered on edit');
       }
 
       return result[0];

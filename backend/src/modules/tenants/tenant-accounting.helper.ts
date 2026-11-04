@@ -12,6 +12,8 @@ export const ACC = {
   SALES: '4000',
   COGS: '5000',
   SALARIES: '5100',
+  INCOME_TAX: '2300', // Income tax withheld from salaries, owed to the government
+  OPENING_EQUITY: '3900', // Balancing side of opening balances
 } as const;
 
 // Liabilities, equity and income grow on the CREDIT side
@@ -277,6 +279,26 @@ export async function changeCustomerBalance(db: Db, customerId: string, amount: 
     round2(amount),
     customerId,
   );
+}
+
+// Opening balance of a customer (what they owed when you started using MyERP)
+// or supplier (what you owed them). Positive = normal side, negative = advance.
+export async function postOpeningBalance(db: Db, kind: 'customer' | 'supplier', party: { id: string; name: string }, amount: number) {
+  const a = round2(amount);
+  if (!a) return null;
+  const control = kind === 'customer' ? ACC.AR : ACC.AP;
+  // Customer: Dr AR / Cr Opening equity.  Supplier: Dr Opening equity / Cr AP.
+  const up = kind === 'customer' ? a > 0 : a < 0;
+  const v = Math.abs(a);
+  return postJournal(db, {
+    description: `Opening balance: ${party.name}`,
+    reference: 'Opening balance',
+    sourceType: 'opening_balance',
+    sourceId: party.id,
+    lines: up
+      ? [{ code: control, debit: v }, { code: ACC.OPENING_EQUITY, credit: v }]
+      : [{ code: ACC.OPENING_EQUITY, debit: v }, { code: control, credit: v }],
+  });
 }
 
 // ── One-time sync of records created before auto-accounting ──────────

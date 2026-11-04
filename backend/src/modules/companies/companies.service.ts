@@ -102,67 +102,77 @@ export class CompaniesService {
       throw new BadRequestException('No valid modules selected');
     }
 
-    // ── Create tenant schema + tables ──────────────────
-    await this.tenantService.createTenantSchema(dto.slug);
+    // If anything below fails, remove the half-made database schema so the
+    // same subdomain can be used again cleanly
+    let company: any;
+    try {
+      // ── Create tenant schema + tables ──────────────────
+      await this.tenantService.createTenantSchema(dto.slug);
 
-    // ── Seed CEO + default data in tenant ──────────────
-    const moduleKeys = modules.map((m) => m.key);
+      // ── Seed CEO + default data in tenant ──────────────
+      const moduleKeys = modules.map((m) => m.key);
 
-await this.tenantService.seedTenantData(
-  dto.slug,
-  dto.ceoName,
-  dto.ceoEmail,
-  hashedPassword,
-  moduleKeys,
-);
+      await this.tenantService.seedTenantData(
+        dto.slug,
+        dto.ceoName,
+        dto.ceoEmail.trim().toLowerCase(),
+        hashedPassword,
+        moduleKeys,
+      );
 
-    // ── Build tenant database URL ──────────────────────
-    const schemaName = `tenant_${dto.slug}`;
-    const baseUrl = process.env.DATABASE_URL!;
-    const databaseUrl = baseUrl.includes('?')
-      ? `${baseUrl}&schema=${schemaName}`
-      : `${baseUrl}?schema=${schemaName}`;
+      // ── Build tenant database URL ──────────────────────
+      const schemaName = `tenant_${dto.slug}`;
+      const baseUrl = process.env.DATABASE_URL!;
+      const databaseUrl = baseUrl.includes('?')
+        ? `${baseUrl}&schema=${schemaName}`
+        : `${baseUrl}?schema=${schemaName}`;
 
-    // ── Create company + modules in transaction ────────
-    const company = await this.prisma.$transaction(async (tx) => {
-      const newCompany = await tx.company.create({
-        data: {
-          name: dto.name,
-          slug: dto.slug,
-          ceoName: dto.ceoName,
-          ceoEmail: dto.ceoEmail,
-          databaseUrl,
-          plan: (dto.plan as any) || 'FREE',
-          status: 'ACTIVE',
-        },
+      // ── Create company + modules in transaction ────────
+      company = await this.prisma.$transaction(async (tx) => {
+        const newCompany = await tx.company.create({
+          data: {
+            name: dto.name,
+            slug: dto.slug,
+            ceoName: dto.ceoName,
+            ceoEmail: dto.ceoEmail,
+            databaseUrl,
+            plan: (dto.plan as any) || 'FREE',
+            status: 'ACTIVE',
+          },
+        });
+
+        await tx.companyModule.createMany({
+          data: modules.map((m) => ({
+            companyId: newCompany.id,
+            moduleId: m.id,
+          })),
+        });
+
+        await tx.subscription.create({
+          data: {
+            companyId: newCompany.id,
+            plan: (dto.plan as any) || 'FREE',
+            status: 'ACTIVE',
+            startDate: new Date(),
+          },
+        });
+
+        await tx.systemLog.create({
+          data: {
+            action: 'COMPANY_CREATED',
+            performedBy: 'super_admin',
+            details: `Company ${dto.name} created with schema ${schemaName}`,
+          },
+        });
+
+        return newCompany;
       });
-
-      await tx.companyModule.createMany({
-        data: modules.map((m) => ({
-          companyId: newCompany.id,
-          moduleId: m.id,
-        })),
-      });
-
-      await tx.subscription.create({
-        data: {
-          companyId: newCompany.id,
-          plan: (dto.plan as any) || 'FREE',
-          status: 'ACTIVE',
-          startDate: new Date(),
-        },
-      });
-
-      await tx.systemLog.create({
-        data: {
-          action: 'COMPANY_CREATED',
-          performedBy: 'super_admin',
-          details: `Company ${dto.name} created with schema ${schemaName}`,
-        },
-      });
-
-      return newCompany;
-    });
+    } catch (err) {
+      await this.prisma
+        .$executeRawUnsafe(`DROP SCHEMA IF EXISTS "tenant_${dto.slug}" CASCADE`)
+        .catch(() => {});
+      throw err;
+    }
 
     const frontendUrl = process.env.FRONTEND_URL || 'https://myerp-frontend.vercel.app';
 

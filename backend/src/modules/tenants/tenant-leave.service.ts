@@ -206,52 +206,51 @@ export class TenantLeaveService {
   async approveLeave(slug: string, id: string, userId: string) {
     const client = await this.tenantService.getTenantClient(slug);
 
-    const requests = await client.$queryRawUnsafe(
-      `SELECT * FROM "leave_requests" WHERE "id" = $1::uuid LIMIT 1`, id,
-    ) as any[];
-
-    if (!requests.length) throw new NotFoundException('Leave request not found');
-    if (requests[0].status !== 'PENDING') {
-      throw new BadRequestException('Only pending requests can be approved');
-    }
-
-    const result = await client.$queryRawUnsafe(
-      `UPDATE "leave_requests"
-       SET "status" = 'APPROVED', "approvedBy" = $1::uuid,
-           "approvedAt" = NOW(), "updatedAt" = NOW()
-       WHERE "id" = $2::uuid RETURNING *`,
-      userId,
-      id,
-    ) as any[];
-
-    // Mark attendance as LEAVE for approved days
-    const request = requests[0];
-    const start = new Date(request.startDate);
-    const end = new Date(request.endDate);
-
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split('T')[0];
-      const existing = await client.$queryRawUnsafe(
-        `SELECT id FROM "attendance"
-         WHERE "employeeId" = $1::uuid AND DATE("date") = $2::date LIMIT 1`,
-        request.employeeId, dateStr,
-      ) as any[];
-
-      if (existing.length > 0) {
-        await client.$queryRawUnsafe(
-          `UPDATE "attendance" SET "status" = 'LEAVE' WHERE "id" = $1::uuid`,
-          (existing[0] as any).id,
-        );
-      } else {
-        await client.$queryRawUnsafe(
-          `INSERT INTO "attendance" ("id", "employeeId", "date", "status")
-           VALUES (gen_random_uuid(), $1::uuid, $2::timestamp, 'LEAVE')`,
-          request.employeeId, `${dateStr}T00:00:00`,
-        );
+    // Approval + attendance marks happen together, or not at all
+    const approved = await client.$transaction(async (tx: any) => {
+      const requests = (await tx.$queryRawUnsafe(
+        `SELECT * FROM "leave_requests" WHERE "id" = $1::uuid LIMIT 1 FOR UPDATE`, id,
+      )) as any[];
+      if (!requests.length) throw new NotFoundException('Leave request not found');
+      if (requests[0].status !== 'PENDING') {
+        throw new BadRequestException('Only pending requests can be approved');
       }
-    }
 
-    return { success: true, message: 'Leave approved and attendance updated', data: result[0] };
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const result = (await tx.$queryRawUnsafe(
+        `UPDATE "leave_requests"
+         SET "status" = 'APPROVED', "approvedBy" = $1::uuid,
+             "approvedAt" = NOW(), "updatedAt" = NOW()
+         WHERE "id" = $2::uuid RETURNING *`,
+        userId && uuid.test(userId) ? userId : null,
+        id,
+      )) as any[];
+
+      // Mark every day of the leave as LEAVE in attendance (dates done in SQL,
+      // so time zones can't move a day)
+      await tx.$queryRawUnsafe(
+        `UPDATE "attendance" a SET "status" = 'LEAVE'
+         FROM "leave_requests" lr
+         WHERE lr."id" = $1::uuid AND a."employeeId" = lr."employeeId"
+           AND a."date"::date BETWEEN lr."startDate"::date AND lr."endDate"::date`,
+        id,
+      );
+      await tx.$queryRawUnsafe(
+        `INSERT INTO "attendance" ("id", "employeeId", "date", "status")
+         SELECT gen_random_uuid(), lr."employeeId", d::date::timestamp, 'LEAVE'
+         FROM "leave_requests" lr,
+              generate_series(lr."startDate"::date, lr."endDate"::date, interval '1 day') d
+         WHERE lr."id" = $1::uuid
+           AND NOT EXISTS (
+             SELECT 1 FROM "attendance" a
+             WHERE a."employeeId" = lr."employeeId" AND a."date"::date = d::date
+           )`,
+        id,
+      );
+      return result[0];
+    });
+
+    return { success: true, message: 'Leave approved and attendance updated', data: approved };
   }
 
   async rejectLeave(slug: string, id: string, body: any) {

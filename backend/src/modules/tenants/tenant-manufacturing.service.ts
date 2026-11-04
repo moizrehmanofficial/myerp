@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
-import { ensureTenantUpgrades, nextDocNumber, stockIn, stockOut, groupQtyByProduct, TX_OPTIONS } from './tenant-doc.helper';
+import { ensureTenantUpgrades, nextDocNumber, stockIn, stockOut, groupQtyByProduct, TX_OPTIONS, round2 } from './tenant-doc.helper';
 
 const STATUSES = ['PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'];
 
@@ -163,24 +163,55 @@ export class TenantManufacturingService {
   private async complete(tx: any, order: any) {
     const mats = await this.materials(tx, order.id);
     // stockOut refuses if there is not enough, and the whole thing rolls back
+    let cost = 0;
     for (const m of mats) {
-      await stockOut(tx, m.productId, Number(m.requiredQuantity), order.orderNumber, 'Used in production');
-      await tx.$queryRawUnsafe(
-        `UPDATE "manufacturing_materials" SET "usedQuantity" = $1 WHERE "id" = $2::uuid`,
-        Number(m.requiredQuantity),
-        m.id,
-      );
+      const qty = Number(m.requiredQuantity);
+      const p = (await tx.$queryRawUnsafe(`SELECT "purchasePrice" FROM "products" WHERE "id" = $1::uuid`, m.productId)) as any[];
+      cost += qty * Number(p[0]?.purchasePrice || 0);
+      await stockOut(tx, m.productId, qty, order.orderNumber, 'Used in production');
+      await tx.$queryRawUnsafe(`UPDATE "manufacturing_materials" SET "usedQuantity" = $1 WHERE "id" = $2::uuid`, qty, m.id);
     }
-    await stockIn(tx, order.productId, Number(order.quantity), order.orderNumber, 'Produced');
+    cost = round2(cost);
+
+    // The finished product now carries the cost of its materials:
+    // new cost price = average of the stock already there and the new batch.
+    // (So cost of goods sold is right when it is sold.)
+    const qty = Number(order.quantity);
+    const fp = (await tx.$queryRawUnsafe(
+      `SELECT "stock", "purchasePrice" FROM "products" WHERE "id" = $1::uuid FOR UPDATE`,
+      order.productId,
+    )) as any[];
+    const oldStock = Math.max(Number(fp[0]?.stock || 0), 0);
+    const oldPrice = Number(fp[0]?.purchasePrice || 0);
+    if (cost > 0) {
+      const avg = round2((oldStock * oldPrice + cost) / (oldStock + qty));
+      await tx.$queryRawUnsafe(`UPDATE "products" SET "purchasePrice" = $1 WHERE "id" = $2::uuid`, avg, order.productId);
+    }
+    await tx.$queryRawUnsafe(`UPDATE "manufacturing_orders" SET "materialCost" = $1 WHERE "id" = $2::uuid`, cost, order.id);
+    await stockIn(tx, order.productId, qty, order.orderNumber, 'Produced');
   }
 
   private async uncomplete(tx: any, order: any, why: string) {
-    await stockOut(tx, order.productId, Number(order.quantity), order.orderNumber, why);
+    const qty = Number(order.quantity);
+    const cost = Number(order.materialCost || 0);
+    // Take the batch's cost back out of the average before removing it
+    const fp = (await tx.$queryRawUnsafe(
+      `SELECT "stock", "purchasePrice" FROM "products" WHERE "id" = $1::uuid FOR UPDATE`,
+      order.productId,
+    )) as any[];
+    const stock = Number(fp[0]?.stock || 0);
+    const price = Number(fp[0]?.purchasePrice || 0);
+    await stockOut(tx, order.productId, qty, order.orderNumber, why);
+    if (cost > 0 && stock - qty > 0) {
+      const avg = Math.max(round2((stock * price - cost) / (stock - qty)), 0);
+      await tx.$queryRawUnsafe(`UPDATE "products" SET "purchasePrice" = $1 WHERE "id" = $2::uuid`, avg, order.productId);
+    }
     for (const m of await this.materials(tx, order.id)) {
       const used = Number(m.usedQuantity || m.requiredQuantity);
       await stockIn(tx, m.productId, used, order.orderNumber, why);
       await tx.$queryRawUnsafe(`UPDATE "manufacturing_materials" SET "usedQuantity" = 0 WHERE "id" = $1::uuid`, m.id);
     }
+    await tx.$queryRawUnsafe(`UPDATE "manufacturing_orders" SET "materialCost" = 0 WHERE "id" = $1::uuid`, order.id);
   }
 
   async getProducts(slug: string) {

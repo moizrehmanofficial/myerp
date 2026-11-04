@@ -60,6 +60,8 @@ async function runTenantUpgrades(client: Db, slug: string) {
   // Payroll: when and how a salary was paid (Part 3)
   await client.$queryRawUnsafe(`ALTER TABLE "payroll" ADD COLUMN IF NOT EXISTS "paidAt" TIMESTAMP`);
   await client.$queryRawUnsafe(`ALTER TABLE "payroll" ADD COLUMN IF NOT EXISTS "paidMethod" VARCHAR(20)`);
+  // Manufacturing: cost of the raw materials used (Batch 6)
+  await client.$queryRawUnsafe(`ALTER TABLE "manufacturing_orders" ADD COLUMN IF NOT EXISTS "materialCost" DECIMAL(15,2) DEFAULT 0`);
 
   // ── Accounting upgrades (Batch 4) ──
   // isJournaled = old invoice that was later posted to accounts (no stock change)
@@ -88,6 +90,8 @@ async function runTenantUpgrades(client: Db, slug: string) {
     ['1200', 'Inventory', 'ASSET'],
     ['2000', 'Accounts Payable', 'LIABILITY'],
     ['2200', 'Sales Tax Payable', 'LIABILITY'],
+    ['2300', 'Income Tax Payable', 'LIABILITY'],
+    ['3900', 'Opening Balance Equity', 'EQUITY'],
     ['4000', 'Sales Revenue', 'INCOME'],
     ['5000', 'Cost of Goods Sold', 'EXPENSE'],
     ['5100', 'Salaries Expense', 'EXPENSE'],

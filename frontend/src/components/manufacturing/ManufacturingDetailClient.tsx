@@ -9,7 +9,7 @@ import TenantLayout from '@/components/layout/TenantLayout'
 import { Badge, Button, Card, CardHeader, Spinner, Table, TableWrap, Th, Td, Tr, EmptyState, buttonStyles, useConfirm } from '@/components/ui'
 import { usePermission } from '@/hooks/usePermission'
 import { tenantApi, apiError } from '@/lib/tenantApi'
-import { number, date } from '@/lib/format'
+import { money, number, date } from '@/lib/format'
 import { useCompanyHref } from '@/lib/useCompanyHref'
 import { cn } from '@/utils/utils'
 import { MFG_STEPS, MFG_TONE, mfgStatusLabel } from './mfg'
@@ -48,7 +48,7 @@ export default function ManufacturingDetailClient({ id }: { id: string }) {
       IN_PROGRESS: done
         ? { title: 'Undo completion?', message: `${number(order.quantity)} ${order.productName} leave stock again and the raw materials are put back.`, label: 'Undo completion', danger: true }
         : { title: 'Start production?', message: 'Nothing changes in stock yet.', label: 'Start' },
-      COMPLETED: { title: `Complete ${order.orderNumber}?`, message: `The raw materials below leave stock and ${number(order.quantity)} ${order.productName} are added to stock.`, label: 'Complete and update stock' },
+      COMPLETED: { title: `Complete ${order.orderNumber}?`, message: `The raw materials below leave stock and ${number(order.quantity)} ${order.productName} are added to stock. Its cost price becomes the average including these materials.`, label: 'Complete and update stock' },
       CANCELLED: { title: `Cancel ${order.orderNumber}?`, message: 'The order stays on file as cancelled.', label: 'Cancel order', danger: true },
       PLANNED: { title: 'Move back to planned?', message: 'Nothing changes in stock.', label: 'Move back' },
     }
@@ -186,6 +186,9 @@ export default function ManufacturingDetailClient({ id }: { id: string }) {
                 ['Product', order.productName],
                 ['Quantity', `${number(order.quantity)} ${order.productUnit || 'pcs'}`],
                 ['In stock now', `${number(order.currentStock)} ${order.productUnit || 'pcs'}`],
+                ...(done && Number(order.materialCost) > 0
+                  ? [['Material cost', `${money(order.materialCost)} (${money(Number(order.materialCost) / Number(order.quantity || 1))} each)`]]
+                  : []),
                 ['Start', order.startDate ? date(order.startDate) : '—'],
                 ['Finish by', order.endDate ? date(order.endDate) : '—'],
                 ['Created', date(order.createdAt)],

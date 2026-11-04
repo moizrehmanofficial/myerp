@@ -32,7 +32,7 @@ const TEXT = {
   },
 }
 
-const EMPTY_FORM = { name: '', email: '', phone: '', address: '' }
+const EMPTY_FORM = { name: '', email: '', phone: '', address: '', openingBalance: '' }
 
 export default function ContactListPage({ kind }: { kind: Kind }) {
   const t = TEXT[kind]
@@ -79,7 +79,7 @@ export default function ContactListPage({ kind }: { kind: Kind }) {
 
   function openEdit(row: any) {
     setEditing(row)
-    setForm({ name: row.name || '', email: row.email || '', phone: row.phone || '', address: row.address || '' })
+    setForm({ name: row.name || '', email: row.email || '', phone: row.phone || '', address: row.address || '', openingBalance: '' })
     setNameError('')
     setShowForm(true)
   }
@@ -93,10 +93,11 @@ export default function ContactListPage({ kind }: { kind: Kind }) {
     setSaving(true)
     try {
       if (editing) {
-        await tenantApi.put(`${t.endpoint}/${editing.id}`, form)
+        const { openingBalance: _ob, ...edit } = form
+        await tenantApi.put(`${t.endpoint}/${editing.id}`, edit)
         toast.success(`${capital(t.one)} saved`)
       } else {
-        await tenantApi.post(t.endpoint, form)
+        await tenantApi.post(t.endpoint, { ...form, openingBalance: Number(form.openingBalance) || 0 })
         toast.success(`${capital(t.one)} added`)
       }
       setShowForm(false)
@@ -270,6 +271,17 @@ export default function ContactListPage({ kind }: { kind: Kind }) {
           <Field label="Address" className="sm:col-span-2">
             {(id) => <Textarea id={id} rows={3} value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />}
           </Field>
+          {!editing && (
+            <Field
+              label="Opening balance (PKR)"
+              className="sm:col-span-2"
+              hint={kind === 'customer'
+                ? 'What they already owed you before MyERP. Enter a minus amount if they paid you in advance. Leave empty if nothing.'
+                : 'What you already owed them before MyERP. Enter a minus amount if you paid them in advance. Leave empty if nothing.'}
+            >
+              {(id) => <Input id={id} type="number" step="0.01" inputMode="decimal" className="num" value={form.openingBalance} onChange={(e) => setForm({ ...form, openingBalance: e.target.value })} placeholder="0" />}
+            </Field>
+          )}
           <button type="submit" className="hidden" />
         </form>
       </Modal>

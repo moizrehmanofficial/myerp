@@ -1,4 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { ensureTenantUpgrades, TX_OPTIONS } from './tenant-doc.helper';
+import { postOpeningBalance } from './tenant-accounting.helper';
 import { TenantService } from './tenant.service';
 import { TenantAuditService } from './tenant-audit.service';
 
@@ -85,15 +87,25 @@ export class TenantCustomersService {
   async create(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
 
-    const result = await client.$queryRawUnsafe(
-      `INSERT INTO "customers" ("id", "name", "email", "phone", "address", "balance")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, 0)
-       RETURNING *`,
-      body.name,
-      body.email || null,
-      body.phone || null,
-      body.address || null,
-    ) as any[];
+    // Opening balance: what they owed (customer) / what you owed (supplier)
+    // on the day you started using MyERP. Negative = advance.
+    const opening = Math.round((Number(body.openingBalance) || 0) * 100) / 100;
+    if (!String(body.name || '').trim()) throw new BadRequestException('Enter a name');
+    await ensureTenantUpgrades(client, slug);
+    const result = await client.$transaction(async (tx: any) => {
+      const rows = (await tx.$queryRawUnsafe(
+        `INSERT INTO "customers" ("id", "name", "email", "phone", "address", "balance")
+         VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
+         RETURNING *`,
+        String(body.name).trim(),
+        body.email || null,
+        body.phone || null,
+        body.address || null,
+        opening,
+      )) as any[];
+      if (opening) await postOpeningBalance(tx, 'customer', rows[0], opening);
+      return rows;
+    }, TX_OPTIONS) as any[];
 
     await this.auditService.log(slug, {
       action: 'CREATED',

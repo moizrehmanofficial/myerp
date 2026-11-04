@@ -432,7 +432,7 @@ export class TenantHRService {
         id,
       )) as any[];
 
-      const changed = Number(old.netSalary) !== netSalary || old.paidMethod !== method;
+      const changed = Number(old.netSalary) !== netSalary || Number(old.tax) !== tax || old.paidMethod !== method;
       const ref = `Salary ${old.month}/${old.year}`;
       if (wasPaid && (!isPaid || changed)) {
         await reverseSource(tx, 'payroll', id, `Salary payment cancelled: ${old.employeeName}`, ref);
@@ -443,9 +443,12 @@ export class TenantHRService {
           reference: ref,
           sourceType: 'payroll',
           sourceId: id,
+          // Expense = what the employee earned (net pay + tax withheld).
+          // Tax withheld is owed to the government until you pay it.
           lines: [
-            { code: ACC.SALARIES, debit: netSalary, description: 'Salaries expense' },
+            { code: ACC.SALARIES, debit: round2(netSalary + tax), description: 'Salaries expense' },
             { code: cashAccountFor(method), credit: netSalary, description: 'Salary paid' },
+            { code: ACC.INCOME_TAX, credit: tax, description: 'Income tax withheld' },
           ],
         });
       }

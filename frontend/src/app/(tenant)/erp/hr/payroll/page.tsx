@@ -265,7 +265,7 @@ export default function PayrollPage() {
             <div className="col-span-2 flex flex-col gap-1.5">
               <span className="text-[13px] font-medium text-ink-2">Paid by</span>
               <Segmented label="Paid by" options={[...PAY_METHODS]} value={form.method} onChange={(v) => setForm({ ...form, method: v })} />
-              <p className="text-xs text-ink-3">Recorded in the accounts as salaries expense, paid from {form.method === 'CASH' ? 'Cash in hand' : 'the bank account'}.</p>
+              <p className="text-xs text-ink-3">Recorded in the accounts: salary expense, paid from {form.method === 'CASH' ? 'Cash in hand' : 'the bank account'}{n(form.tax) > 0 ? ', and the tax withheld as Income Tax Payable' : ''}.</p>
             </div>
           )}
           <button type="submit" className="hidden" />
