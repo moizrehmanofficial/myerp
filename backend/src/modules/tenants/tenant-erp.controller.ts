@@ -813,6 +813,14 @@ export class TenantErpController {
     return this.financeService.getTrialBalance(slug);
   }
 
+  // One-time: post invoices / purchases created before auto-accounting
+  @Post('finance/post-old-records')
+  async postOldRecords(@Req() req: any) {
+    const payload = this.getPayload(req);
+    const slug = this.getSlug(req, payload);
+    return this.financeService.postOldRecords(slug);
+  }
+
 
   // ── REPORTS ───────────────────────────────────────────
   @Get('reports/sales')

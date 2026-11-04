@@ -1,6 +1,15 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
-import { ensureTenantUpgrades, nextDocNumber } from './tenant-doc.helper';
+import { ensureTenantUpgrades, nextDocNumber, TX_OPTIONS, round2 } from './tenant-doc.helper';
+import {
+  ACC,
+  cashAccountFor,
+  naturalBalance,
+  postJournal,
+  changeCustomerBalance,
+  changeSupplierBalance,
+  syncOldRecords,
+} from './tenant-accounting.helper';
 
 @Injectable()
 export class TenantFinanceService {
@@ -10,9 +19,16 @@ export class TenantFinanceService {
 
   async getAccounts(slug: string) {
     const client = await this.tenantService.getTenantClient(slug);
-    const accounts = await client.$queryRawUnsafe(
+    const rows = await client.$queryRawUnsafe(
       `SELECT * FROM "chart_of_accounts" WHERE "isActive" = true ORDER BY "code" ASC`,
     ) as any[];
+
+    // Show balances the way accountants read them:
+    // liabilities / equity / income as positive numbers
+    const accounts = rows.map((a: any) => {
+      const raw = Number(a.balance || 0); // stored as debit − credit
+      return { ...a, balance: naturalBalance(a.type, raw > 0 ? raw : 0, raw < 0 ? -raw : 0) };
+    });
 
     const grouped = {
       ASSET: accounts.filter((a: any) => a.type === 'ASSET'),
@@ -138,58 +154,32 @@ export class TenantFinanceService {
 
   async createJournal(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
     const items = body.items || [];
     if (items.length < 2) throw new BadRequestException('Journal must have at least 2 entries');
-
-    const totalDebit = items.reduce((sum: number, i: any) => sum + (parseFloat(i.debit) || 0), 0);
-    const totalCredit = items.reduce((sum: number, i: any) => sum + (parseFloat(i.credit) || 0), 0);
-
-    if (Math.abs(totalDebit - totalCredit) > 0.01) {
-      throw new BadRequestException(`Journal must balance. Debit: ${totalDebit}, Credit: ${totalCredit}`);
+    if (!body.description) throw new BadRequestException('Description is required');
+    for (const i of items) {
+      if (!i.accountId) throw new BadRequestException('Select an account on every line');
     }
 
-    // Generate entry number (unique, never repeats)
-    await ensureTenantUpgrades(client, slug);
-    const entryNumber = await nextDocNumber(client, 'journal');
+    // Balance check + entry + items + account balances, all in one transaction
+    const journal = await client.$transaction(async (tx: any) => {
+      return postJournal(tx, {
+        description: body.description,
+        reference: body.reference || null,
+        sourceType: body.sourceType || 'manual',
+        sourceId: body.sourceId || null,
+        lines: items.map((i: any) => ({
+          accountId: i.accountId,
+          debit: Number(i.debit) || 0,
+          credit: Number(i.credit) || 0,
+          description: i.description || null,
+        })),
+      });
+    }, TX_OPTIONS);
 
-    const journalResult = await client.$queryRawUnsafe(
-      `INSERT INTO "journal_entries" ("id", "entryNumber", "description", "totalDebit", "totalCredit", "reference")
-       VALUES (gen_random_uuid(), $1, $2, $3, $4, $5)
-       RETURNING *`,
-      entryNumber,
-      body.description,
-      totalDebit,
-      totalCredit,
-      body.reference || null,
-    ) as any[];
-
-    const journal = journalResult[0];
-
-    for (const item of items) {
-      const debit = parseFloat(item.debit) || 0;
-      const credit = parseFloat(item.credit) || 0;
-
-      await client.$queryRawUnsafe(
-        `INSERT INTO "journal_items" ("id", "journalEntryId", "accountId", "debit", "credit", "description")
-         VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5)`,
-        journal.id,
-        item.accountId,
-        debit,
-        credit,
-        item.description || null,
-      );
-
-      // Update account balance
-      await client.$queryRawUnsafe(
-        `UPDATE "chart_of_accounts"
-         SET "balance" = "balance" + $1
-         WHERE "id" = $2::uuid`,
-        debit - credit,
-        item.accountId,
-      );
-    }
-
+    if (!journal) throw new BadRequestException('Journal amounts cannot all be zero');
     return { success: true, message: 'Journal entry created successfully', data: journal };
   }
 
@@ -249,34 +239,60 @@ export class TenantFinanceService {
     };
   }
 
+  // Money OUT.
+  // Supplier  → Dr Accounts Payable, Cr Cash/Bank (supplier balance goes down)
+  // Customer  → refund: Dr Accounts Receivable, Cr Cash/Bank
+  // No party  → expense: Dr <selected expense account>, Cr Cash/Bank
   async createPayment(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
-    const result = await client.$queryRawUnsafe(
-      `INSERT INTO "payments" ("id", "type", "method", "amount", "supplierId", "customerId", "reference", "notes")
-       VALUES (gen_random_uuid(), 'PAYMENT', $1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      body.method || 'CASH',
-      parseFloat(body.amount),
-      body.supplierId || null,
-      body.customerId || null,
-      body.reference || null,
-      body.notes || null,
-    ) as any[];
-
-    // Auto create journal entry
-    if (body.debitAccountId && body.creditAccountId) {
-      await this.createJournal(slug, {
-        description: body.notes || 'Payment Voucher',
-        reference: result[0].id,
-        items: [
-          { accountId: body.debitAccountId, debit: body.amount, credit: 0, description: 'Payment' },
-          { accountId: body.creditAccountId, debit: 0, credit: body.amount, description: 'Payment' },
-        ],
-      });
+    const amount = round2(Number(body.amount));
+    if (!(amount > 0)) throw new BadRequestException('Amount must be greater than 0');
+    if (!body.supplierId && !body.customerId && !body.debitAccountId) {
+      throw new BadRequestException('Select a supplier, a customer, or the expense (debit) account');
     }
 
-    return { success: true, message: 'Payment recorded successfully', data: result[0] };
+    const payment = await client.$transaction(async (tx: any) => {
+      const result = (await tx.$queryRawUnsafe(
+        `INSERT INTO "payments" ("id", "type", "method", "amount", "supplierId", "customerId", "reference", "notes")
+         VALUES (gen_random_uuid(), 'PAYMENT', $1, $2, $3::uuid, $4::uuid, $5, $6)
+         RETURNING *`,
+        body.method || 'CASH',
+        amount,
+        body.supplierId || null,
+        body.customerId || null,
+        body.reference || null,
+        body.notes || null,
+      )) as any[];
+      const p = result[0];
+
+      const credit = body.creditAccountId
+        ? { accountId: body.creditAccountId, credit: amount }
+        : { code: cashAccountFor(body.method), credit: amount };
+
+      let debit: any;
+      if (body.supplierId) {
+        debit = { code: ACC.AP, debit: amount };
+        await changeSupplierBalance(tx, body.supplierId, -amount);
+      } else if (body.customerId) {
+        debit = { code: ACC.AR, debit: amount };
+        await changeCustomerBalance(tx, body.customerId, amount);
+      } else {
+        debit = { accountId: body.debitAccountId, debit: amount };
+      }
+
+      await postJournal(tx, {
+        description: body.notes || 'Payment voucher',
+        reference: body.reference || null,
+        sourceType: 'payment',
+        sourceId: p.id,
+        lines: [debit, credit],
+      });
+      return p;
+    }, TX_OPTIONS);
+
+    return { success: true, message: 'Payment recorded successfully', data: payment };
   }
 
   // ── RECEIPTS (Money IN) ────────────────────────────────
@@ -311,34 +327,100 @@ export class TenantFinanceService {
     };
   }
 
+  // Money IN.
+  // Customer → Dr Cash/Bank, Cr Accounts Receivable; also marks the customer's
+  //            oldest unpaid invoices as paid (FIFO), so invoice dues stay correct
+  // Supplier → refund: Dr Cash/Bank, Cr Accounts Payable
+  // No party → other income: Dr Cash/Bank, Cr <selected income account>
   async createReceipt(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
-    const result = await client.$queryRawUnsafe(
-      `INSERT INTO "payments" ("id", "type", "method", "amount", "supplierId", "customerId", "reference", "notes")
-       VALUES (gen_random_uuid(), 'RECEIPT', $1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      body.method || 'CASH',
-      parseFloat(body.amount),
-      body.supplierId || null,
-      body.customerId || null,
-      body.reference || null,
-      body.notes || null,
-    ) as any[];
-
-    // Auto create journal entry
-    if (body.debitAccountId && body.creditAccountId) {
-      await this.createJournal(slug, {
-        description: body.notes || 'Receipt Voucher',
-        reference: result[0].id,
-        items: [
-          { accountId: body.debitAccountId, debit: body.amount, credit: 0, description: 'Receipt' },
-          { accountId: body.creditAccountId, debit: 0, credit: body.amount, description: 'Receipt' },
-        ],
-      });
+    const amount = round2(Number(body.amount));
+    if (!(amount > 0)) throw new BadRequestException('Amount must be greater than 0');
+    if (!body.supplierId && !body.customerId && !body.creditAccountId) {
+      throw new BadRequestException('Select a customer, a supplier, or the income (credit) account');
     }
 
-    return { success: true, message: 'Receipt recorded successfully', data: result[0] };
+    const receipt = await client.$transaction(async (tx: any) => {
+      const result = (await tx.$queryRawUnsafe(
+        `INSERT INTO "payments" ("id", "type", "method", "amount", "supplierId", "customerId", "reference", "notes")
+         VALUES (gen_random_uuid(), 'RECEIPT', $1, $2, $3::uuid, $4::uuid, $5, $6)
+         RETURNING *`,
+        body.method || 'CASH',
+        amount,
+        body.supplierId || null,
+        body.customerId || null,
+        body.reference || null,
+        body.notes || null,
+      )) as any[];
+      const r = result[0];
+
+      const debit = body.debitAccountId
+        ? { accountId: body.debitAccountId, debit: amount }
+        : { code: cashAccountFor(body.method), debit: amount };
+
+      let credit: any;
+      if (body.customerId) {
+        credit = { code: ACC.AR, credit: amount };
+        await changeCustomerBalance(tx, body.customerId, -amount);
+
+        // Apply to oldest unpaid invoices (only ones that are in the accounts)
+        let left = amount;
+        const open = (await tx.$queryRawUnsafe(
+          `SELECT * FROM "invoices"
+           WHERE "customerId" = $1::uuid AND "isDeleted" = false AND "dueAmount" > 0
+             AND (COALESCE("isPosted", false) = true OR COALESCE("isJournaled", false) = true)
+           ORDER BY "createdAt" ASC
+           FOR UPDATE`,
+          body.customerId,
+        )) as any[];
+        for (const inv of open) {
+          if (left <= 0) break;
+          const pay = round2(Math.min(left, Number(inv.dueAmount)));
+          const newPaid = round2(Number(inv.paidAmount) + pay);
+          const newDue = round2(Math.max(Number(inv.totalAmount) - newPaid, 0));
+          await tx.$queryRawUnsafe(
+            `UPDATE "invoices" SET "paidAmount" = $1, "dueAmount" = $2, "paymentStatus" = $3, "updatedAt" = NOW()
+             WHERE "id" = $4::uuid`,
+            newPaid,
+            newDue,
+            newDue <= 0 ? 'PAID' : 'PARTIAL',
+            inv.id,
+          );
+          left = round2(left - pay);
+        }
+      } else if (body.supplierId) {
+        credit = { code: ACC.AP, credit: amount };
+        await changeSupplierBalance(tx, body.supplierId, amount);
+      } else {
+        credit = { accountId: body.creditAccountId, credit: amount };
+      }
+
+      await postJournal(tx, {
+        description: body.notes || 'Receipt voucher',
+        reference: body.reference || null,
+        sourceType: 'receipt',
+        sourceId: r.id,
+        lines: [debit, credit],
+      });
+      return r;
+    }, TX_OPTIONS);
+
+    return { success: true, message: 'Receipt recorded successfully', data: receipt };
+  }
+
+  // Re-run the one-time sync of old invoices/purchases into the accounts.
+  // (It also runs automatically once per company.) Safe to run again.
+  async postOldRecords(slug: string) {
+    const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const summary = await syncOldRecords(client, slug);
+    return {
+      success: true,
+      message: `Posted ${summary.invoices} old invoice(s) and ${summary.purchases} old purchase(s) to accounts`,
+      data: summary,
+    };
   }
 
   async getTrialBalance(slug: string) {

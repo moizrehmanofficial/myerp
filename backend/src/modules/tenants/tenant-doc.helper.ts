@@ -22,9 +22,28 @@ export type DocType = keyof typeof DOCS;
 
 // One-time, per company: create new helper table/columns on old tenant schemas
 const upgradedTenants = new Set<string>();
+const upgradesInFlight = new Map<string, Promise<void>>();
+
+// Extra one-time steps registered by other helpers (e.g. accounting sync)
+type UpgradeHook = (client: any, slug: string) => Promise<void>;
+const upgradeHooks: UpgradeHook[] = [];
+export function registerUpgradeHook(hook: UpgradeHook) {
+  upgradeHooks.push(hook);
+}
 
 export async function ensureTenantUpgrades(client: Db, slug: string) {
   if (upgradedTenants.has(slug)) return;
+  // Two requests at the same time share one upgrade run
+  if (!upgradesInFlight.has(slug)) {
+    upgradesInFlight.set(
+      slug,
+      runTenantUpgrades(client, slug).finally(() => upgradesInFlight.delete(slug)),
+    );
+  }
+  return upgradesInFlight.get(slug);
+}
+
+async function runTenantUpgrades(client: Db, slug: string) {
   await client.$queryRawUnsafe(
     `CREATE TABLE IF NOT EXISTS "doc_sequences" (
       "key" VARCHAR(50) PRIMARY KEY,
@@ -37,6 +56,57 @@ export async function ensureTenantUpgrades(client: Db, slug: string) {
   await client.$queryRawUnsafe(
     `ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "isPosted" BOOLEAN DEFAULT false`,
   );
+
+  // ── Accounting upgrades (Batch 4) ──
+  // isJournaled = old invoice that was later posted to accounts (no stock change)
+  await client.$queryRawUnsafe(
+    `ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "isJournaled" BOOLEAN DEFAULT false`,
+  );
+  // isPosted on purchase = journal + supplier balance done for this received order
+  await client.$queryRawUnsafe(
+    `ALTER TABLE "purchase_orders" ADD COLUMN IF NOT EXISTS "isPosted" BOOLEAN DEFAULT false`,
+  );
+  // Link every auto journal to the document that created it
+  await client.$queryRawUnsafe(
+    `ALTER TABLE "journal_entries" ADD COLUMN IF NOT EXISTS "sourceType" VARCHAR(50)`,
+  );
+  await client.$queryRawUnsafe(
+    `ALTER TABLE "journal_entries" ADD COLUMN IF NOT EXISTS "sourceId" UUID`,
+  );
+  await client.$queryRawUnsafe(
+    `CREATE INDEX IF NOT EXISTS "journal_entries_source_idx" ON "journal_entries" ("sourceType", "sourceId")`,
+  );
+  // Accounts the auto-posting needs (old companies may be missing some)
+  const requiredAccounts: [string, string, string][] = [
+    ['1000', 'Cash in Hand', 'ASSET'],
+    ['1001', 'Bank Account', 'ASSET'],
+    ['1100', 'Accounts Receivable', 'ASSET'],
+    ['1200', 'Inventory', 'ASSET'],
+    ['2000', 'Accounts Payable', 'LIABILITY'],
+    ['2200', 'Sales Tax Payable', 'LIABILITY'],
+    ['4000', 'Sales Revenue', 'INCOME'],
+    ['5000', 'Cost of Goods Sold', 'EXPENSE'],
+  ];
+  for (const [code, name, type] of requiredAccounts) {
+    await client.$queryRawUnsafe(
+      `INSERT INTO "chart_of_accounts" ("id", "code", "name", "type", "balance", "isActive")
+       VALUES (gen_random_uuid(), $1, $2, $3, 0, true)
+       ON CONFLICT ("code") DO NOTHING`,
+      code,
+      name,
+      type,
+    );
+  }
+
+  for (const hook of upgradeHooks) {
+    try {
+      await hook(client, slug);
+    } catch (err) {
+      // Never block the ERP because of a one-time background step
+      console.error(`[tenant-upgrade] ${slug}:`, err);
+    }
+  }
+
   upgradedTenants.add(slug);
 }
 

@@ -11,6 +11,15 @@ import {
   TX_OPTIONS,
   round2,
 } from './tenant-doc.helper';
+import {
+  postInvoiceSale,
+  postInvoicePayment,
+  reverseSource,
+} from './tenant-accounting.helper';
+
+// Invoice is in the accounts (journal + customer balance):
+// new invoices (isPosted) or old ones posted later (isJournaled)
+const isAccounted = (inv: any) => inv?.isPosted === true || inv?.isJournaled === true;
 
 @Injectable()
 export class TenantInvoicesService {
@@ -244,6 +253,10 @@ export class TenantInvoicesService {
       // Money received at the time of sale
       await this.recordReceipt(tx, inv, calc.paidAmount, body.paymentMethod);
 
+      // Accounting: AR / Sales / Tax / COGS, then the payment
+      await postInvoiceSale(tx, inv, calc.items);
+      await postInvoicePayment(tx, inv, calc.paidAmount, body.paymentMethod);
+
       return inv;
     }, TX_OPTIONS);
 
@@ -302,10 +315,12 @@ export class TenantInvoicesService {
         id,
       )) as any[];
 
-      if (invoice.isPosted) {
-        await this.changeCustomerBalance(tx, invoice.customerId, -(due - newDue));
+      const received = round2(due - newDue);
+      if (isAccounted(invoice)) {
+        await this.changeCustomerBalance(tx, invoice.customerId, -received);
+        await postInvoicePayment(tx, invoice, received, body.method);
       }
-      await this.recordReceipt(tx, invoice, amount, body.method, body.notes);
+      await this.recordReceipt(tx, invoice, received, body.method, body.notes);
 
       return result[0];
     }, TX_OPTIONS);
@@ -349,8 +364,13 @@ export class TenantInvoicesService {
         for (const [productId, qty] of groupQtyByProduct(items)) {
           await stockIn(tx, productId, qty, inv.invoiceNumber, 'Invoice deleted');
         }
-        // Customer no longer owes the unpaid part
-        await this.changeCustomerBalance(tx, inv.customerId, -Number(inv.dueAmount));
+      }
+      if (isAccounted(inv)) {
+        // Cancel the SALE only. Money already received stays with us and
+        // becomes the customer's credit (negative balance), which can be
+        // refunded from Finance → Payments (select the customer).
+        await this.changeCustomerBalance(tx, inv.customerId, -Number(inv.totalAmount));
+        await reverseSource(tx, 'invoice', inv.id, `Invoice ${inv.invoiceNumber} deleted`, inv.invoiceNumber);
       }
 
       await tx.$queryRawUnsafe(
@@ -393,7 +413,7 @@ export class TenantInvoicesService {
       await this.assertCustomer(tx, body.customerId);
 
       if (old.isPosted) {
-        // 1. Undo the old invoice: stock back + old due off the old customer
+        // 1. Undo the old invoice: stock back
         const oldItems = (await tx.$queryRawUnsafe(
           `SELECT "productId", "quantity" FROM "invoice_items" WHERE "invoiceId" = $1::uuid`,
           id,
@@ -401,7 +421,11 @@ export class TenantInvoicesService {
         for (const [productId, qty] of groupQtyByProduct(oldItems)) {
           await stockIn(tx, productId, qty, old.invoiceNumber, 'Invoice edited (old items)');
         }
+      }
+      if (isAccounted(old)) {
+        // ...old due off the old customer, and cancel the old sale entry
         await this.changeCustomerBalance(tx, old.customerId, -Number(old.dueAmount));
+        await reverseSource(tx, 'invoice', old.id, `Invoice ${old.invoiceNumber} edited (old values)`, old.invoiceNumber);
       }
 
       const result = (await tx.$queryRawUnsafe(
@@ -428,11 +452,18 @@ export class TenantInvoicesService {
       await this.insertItems(tx, id, calc.items);
 
       if (old.isPosted) {
-        // 2. Apply the new invoice: stock out + new due on the (new) customer
+        // 2. Apply the new invoice: stock out
         for (const [productId, qty] of groupQtyByProduct(calc.items)) {
           await stockOut(tx, productId, qty, old.invoiceNumber, 'Invoice edited (new items)');
         }
+      }
+      if (isAccounted(old)) {
+        // ...new due on the (new) customer, new sale entry, and any change in paid amount
         await this.changeCustomerBalance(tx, body.customerId, calc.dueAmount);
+        await postInvoiceSale(tx, result[0], calc.items);
+        const paidChange = round2(calc.paidAmount - Number(old.paidAmount));
+        await postInvoicePayment(tx, result[0], paidChange, body.paymentMethod);
+        if (paidChange > 0) await this.recordReceipt(tx, result[0], paidChange, body.paymentMethod, 'Paid amount changed on edit');
       }
 
       return result[0];

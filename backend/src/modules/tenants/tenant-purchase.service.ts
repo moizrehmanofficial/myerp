@@ -9,6 +9,11 @@ import {
   TX_OPTIONS,
   round2,
 } from './tenant-doc.helper';
+import {
+  postPurchaseReceived,
+  reverseSource,
+  changeSupplierBalance,
+} from './tenant-accounting.helper';
 
 @Injectable()
 export class TenantPurchaseService {
@@ -130,11 +135,12 @@ export class TenantPurchaseService {
         );
       }
 
-      // Goods received → stock goes up
+      // Goods received → stock goes up + accounts + supplier balance
       if (created.status === 'RECEIVED') {
         for (const [productId, qty] of groupQtyByProduct(items)) {
           await stockIn(tx, productId, qty, orderNumber, 'Purchase received');
         }
+        await this.postReceived(tx, created);
       }
       return created;
     }, TX_OPTIONS);
@@ -144,6 +150,7 @@ export class TenantPurchaseService {
 
   async updateStatus(slug: string, id: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
     if (!body.status) throw new BadRequestException('Status is required');
 
     await client.$transaction(async (tx: any) => {
@@ -171,6 +178,12 @@ export class TenantPurchaseService {
             await stockOut(tx, productId, qty, order.orderNumber, `Purchase status → ${body.status}`);
           }
         }
+
+        if (nowReceived) {
+          await this.postReceived(tx, order);
+        } else {
+          await this.unpostReceived(tx, order, `Purchase ${order.orderNumber} status → ${body.status}`);
+        }
       }
 
       await tx.$queryRawUnsafe(
@@ -185,6 +198,7 @@ export class TenantPurchaseService {
 
   async remove(slug: string, id: string) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
     await client.$transaction(async (tx: any) => {
       const orders = (await tx.$queryRawUnsafe(
@@ -203,6 +217,7 @@ export class TenantPurchaseService {
         for (const [productId, qty] of groupQtyByProduct(items)) {
           await stockOut(tx, productId, qty, order.orderNumber, 'Purchase order deleted');
         }
+        await this.unpostReceived(tx, order, `Purchase ${order.orderNumber} deleted`);
       }
 
       await tx.$queryRawUnsafe(
@@ -212,6 +227,27 @@ export class TenantPurchaseService {
     }, TX_OPTIONS);
 
     return { success: true, message: 'Purchase order deleted successfully' };
+  }
+
+  // Inventory debit / Payable credit, and we now owe the supplier
+  private async postReceived(tx: any, order: any) {
+    await postPurchaseReceived(tx, order);
+    await changeSupplierBalance(tx, order.supplierId, Number(order.totalAmount));
+    await tx.$queryRawUnsafe(
+      `UPDATE "purchase_orders" SET "isPosted" = true WHERE "id" = $1::uuid`,
+      order.id,
+    );
+  }
+
+  // Undo the above (only if it was posted; old orders were never posted)
+  private async unpostReceived(tx: any, order: any, reason: string) {
+    if (!order.isPosted) return;
+    await reverseSource(tx, 'purchase', order.id, reason, order.orderNumber);
+    await changeSupplierBalance(tx, order.supplierId, -Number(order.totalAmount));
+    await tx.$queryRawUnsafe(
+      `UPDATE "purchase_orders" SET "isPosted" = false WHERE "id" = $1::uuid`,
+      order.id,
+    );
   }
 
   async getSuppliers(slug: string) {

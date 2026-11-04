@@ -8,6 +8,9 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { TenantService } from '../../modules/tenants/tenant.service';
+import { ensureTenantUpgrades } from '../../modules/tenants/tenant-doc.helper';
+// Loads the accounting helper so its one-time "post old records" step is registered
+import '../../modules/tenants/tenant-accounting.helper';
 
 export type PermissionAction =
   | 'read'
@@ -86,6 +89,8 @@ export const PERMISSION_RULES: PermissionRule[] = [
   { pattern: /^finance\/accounts\/[^/]+\/ledger$/, modules: ['ledger', 'finance'], action: 'read' },
   { pattern: /^finance\/accounts$/, methods: ['GET'], modules: ['finance', 'ledger'], action: 'read' },
   { pattern: /^finance\/trial-balance$/, modules: ['finance', 'ledger', 'reports'], action: 'read' },
+  // One-time posting of old records into the accounts: company owner only
+  { pattern: /^finance\/post-old-records$/, modules: ['finance'], action: 'approve', ownerOnly: true },
   { pattern: /^finance\//, modules: ['finance'] },
 
   // ── Reports ──
@@ -227,6 +232,8 @@ export class TenantPermissionGuard implements CanActivate {
     if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached;
 
     const client = await this.tenantService.getTenantClient(slug);
+    // One-time per company per server start: new columns + post old records to accounts
+    await ensureTenantUpgrades(client, slug);
     const rows = (await client.$queryRawUnsafe(
       `SELECT u."status", u."isOwner", u."isDeleted", r."permissions"
        FROM "users" u

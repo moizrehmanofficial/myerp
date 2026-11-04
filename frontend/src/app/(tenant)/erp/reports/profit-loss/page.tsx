@@ -87,6 +87,29 @@ export default function ProfitLossPage() {
               </span>
             </div>
 
+            {/* Operating expenses (salaries, rent, utilities, ...) */}
+            {(data?.expenseAccounts || []).map((a: any) => (
+              <div key={a.id} style={{ padding: '12px 20px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span style={{ fontSize: '13px', color: '#374151' }}>{a.name} <span style={{ color: '#94A3B8', fontFamily: 'monospace', fontSize: '11px' }}>{a.code}</span></span>
+                <span style={{ fontSize: '14px', fontWeight: 700, color: '#DC2626' }}>− PKR {Number(a.amount || 0).toLocaleString()}</span>
+              </div>
+            ))}
+
+            <div style={{ padding: '20px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>Total Operating Expenses</span>
+              <span style={{ fontSize: '18px', fontWeight: 800, color: '#DC2626' }}>− PKR {(data?.totalExpenses || 0).toLocaleString()}</span>
+            </div>
+
+            <div style={{ padding: '20px', background: (data?.netProfit || 0) >= 0 ? '#16A34A' : '#DC2626', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>{(data?.netProfit || 0) >= 0 ? 'Net Profit' : 'Net Loss'}</span>
+                <div style={{ fontSize: '12px', color: '#DCFCE7', marginTop: '2px' }}>Margin: {(data?.netMargin || 0).toFixed(1)}%</div>
+              </div>
+              <span style={{ fontSize: '22px', fontWeight: 900, color: '#fff' }}>
+                PKR {(data?.netProfit || 0).toLocaleString()}
+              </span>
+            </div>
+
             <div style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC' }}>
               <span style={{ fontSize: '13px', color: '#64748B' }}>Total Stock Purchases (period)</span>
               <span style={{ fontSize: '14px', fontWeight: 700, color: '#EA580C' }}>PKR {(data?.totalPurchases || 0).toLocaleString()}</span>
@@ -94,8 +117,9 @@ export default function ProfitLossPage() {
           </div>
 
           <p style={{ fontSize: '12px', color: '#94A3B8', marginTop: '16px', lineHeight: 1.6 }}>
-            💡 COGS is calculated using the purchase price of products sold via invoices in this period.
-            Stock Purchases shows total spending on new inventory (separate from COGS, as not all purchased stock may have been sold yet).
+            💡 Figures come from the accounts (journal entries): sales invoices, cost of goods sold,
+            and every expense posted (salaries, rent, utilities, manual journals). Revenue excludes sales tax.
+            Stock Purchases is shown for information only — stock becomes an expense (COGS) when it is sold.
           </p>
         </div>
       )}

@@ -1,5 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import { ensureTenantUpgrades } from './tenant-doc.helper';
+import { naturalBalance, ACC } from './tenant-accounting.helper';
+
+// "2026-11-04" as an END date should include the whole day
+function endOfDay(d: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(d || '') ? `${d}T23:59:59.999` : d;
+}
 
 @Injectable()
 export class TenantReportsService {
@@ -133,83 +140,141 @@ export class TenantReportsService {
     };
   }
 
+  // Profit & Loss from the accounts (journal entries) — includes every
+  // income and expense: sales, COGS, salaries, rent, manual journals...
   async getProfitLoss(slug: string, from: string, to: string) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const toEnd = endOfDay(to);
 
-    // Revenue from invoices
-    const revenue = await client.$queryRawUnsafe(
-      `SELECT COALESCE(SUM("totalAmount"), 0) as "totalRevenue"
-       FROM "invoices"
-       WHERE "isDeleted" = false AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp`,
-      from, to,
-    ) as any[];
+    const rows = (await client.$queryRawUnsafe(
+      `SELECT coa."id", coa."code", coa."name", coa."type",
+              COALESCE(SUM(ji."debit"), 0) AS "debit",
+              COALESCE(SUM(ji."credit"), 0) AS "credit"
+       FROM "chart_of_accounts" coa
+       JOIN "journal_items" ji ON ji."accountId" = coa."id"
+       JOIN "journal_entries" je ON je."id" = ji."journalEntryId"
+       WHERE coa."type" IN ('INCOME', 'EXPENSE')
+         AND je."createdAt" >= $1::timestamp AND je."createdAt" <= $2::timestamp
+       GROUP BY coa."id"
+       ORDER BY coa."code" ASC`,
+      from,
+      toEnd,
+    )) as any[];
 
-    // Cost of goods sold — using purchase price of items sold via invoices
-    const cogs = await client.$queryRawUnsafe(
-      `SELECT COALESCE(SUM(ii."quantity" * p."purchasePrice"), 0) as "totalCOGS"
-       FROM "invoice_items" ii
-       JOIN "products" p ON ii."productId" = p."id"
-       JOIN "invoices" i ON ii."invoiceId" = i."id"
-       WHERE i."isDeleted" = false AND i."createdAt" >= $1::timestamp AND i."createdAt" <= $2::timestamp`,
-      from, to,
-    ) as any[];
+    const accounts = rows.map((r: any) => ({
+      id: r.id,
+      code: r.code,
+      name: r.name,
+      type: r.type,
+      amount: naturalBalance(r.type, Number(r.debit), Number(r.credit)),
+    }));
 
-    // Purchases made in period (cash outflow, separate from COGS)
-    const purchases = await client.$queryRawUnsafe(
+    const incomeAccounts = accounts.filter((a: any) => a.type === 'INCOME');
+    const cogsAccounts = accounts.filter((a: any) => a.type === 'EXPENSE' && a.code === ACC.COGS);
+    const expenseAccounts = accounts.filter((a: any) => a.type === 'EXPENSE' && a.code !== ACC.COGS);
+
+    const sum = (list: any[]) => list.reduce((s: number, a: any) => s + a.amount, 0);
+    const totalRevenue = sum(incomeAccounts);
+    const totalCOGS = sum(cogsAccounts);
+    const totalExpenses = sum(expenseAccounts);
+    const grossProfit = totalRevenue - totalCOGS;
+    const netProfit = grossProfit - totalExpenses;
+    const grossMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+    const netMargin = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
+
+    // Info only: money spent on stock in the period (not an expense until sold)
+    const purchases = (await client.$queryRawUnsafe(
       `SELECT COALESCE(SUM("totalAmount"), 0) as "totalPurchases"
        FROM "purchase_orders"
-       WHERE "isDeleted" = false AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp`,
-      from, to,
-    ) as any[];
-
-    const totalRevenue = Number(revenue[0].totalRevenue || 0);
-    const totalCOGS = Number(cogs[0].totalCOGS || 0);
-    const totalPurchases = Number(purchases[0].totalPurchases || 0);
-    const grossProfit = totalRevenue - totalCOGS;
-    const grossMargin = totalRevenue > 0 ? (grossProfit / totalRevenue) * 100 : 0;
+       WHERE "isDeleted" = false AND "status" = 'RECEIVED'
+         AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp`,
+      from,
+      toEnd,
+    )) as any[];
 
     return {
       success: true,
       data: {
         totalRevenue,
         totalCOGS,
-        totalPurchases,
         grossProfit,
         grossMargin,
+        totalExpenses,
+        netProfit,
+        netMargin,
+        totalPurchases: Number(purchases[0].totalPurchases || 0),
+        incomeAccounts,
+        expenseAccounts,
       },
     };
   }
 
+  // Balance sheet as of a date, from journal entries up to that date.
+  // Current period profit is shown under equity so the sheet balances.
   async getBalanceSheet(slug: string, asOf: string) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const asOfEnd = endOfDay(asOf);
 
-    const accounts = await client.$queryRawUnsafe(
+    const rows = (await client.$queryRawUnsafe(
       `SELECT coa.*,
-        COALESCE(SUM(CASE WHEN ji."debit" IS NOT NULL THEN ji."debit" ELSE 0 END), 0) as "totalDebit",
-        COALESCE(SUM(CASE WHEN ji."credit" IS NOT NULL THEN ji."credit" ELSE 0 END), 0) as "totalCredit"
+              COALESCE(t."debit", 0) AS "totalDebit",
+              COALESCE(t."credit", 0) AS "totalCredit"
        FROM "chart_of_accounts" coa
-       LEFT JOIN "journal_items" ji ON coa."id" = ji."accountId"
-       LEFT JOIN "journal_entries" je ON ji."journalEntryId" = je."id"
-         AND je."createdAt" <= $1::timestamp
+       LEFT JOIN (
+         SELECT ji."accountId", SUM(ji."debit") AS "debit", SUM(ji."credit") AS "credit"
+         FROM "journal_items" ji
+         JOIN "journal_entries" je ON je."id" = ji."journalEntryId"
+         WHERE je."createdAt" <= $1::timestamp
+         GROUP BY ji."accountId"
+       ) t ON t."accountId" = coa."id"
        WHERE coa."isActive" = true
-       GROUP BY coa."id"
        ORDER BY coa."code" ASC`,
-      asOf,
-    ) as any[];
+      asOfEnd,
+    )) as any[];
 
-    const assets     = accounts.filter((a: any) => a.type === 'ASSET')
-    const liabilities = accounts.filter((a: any) => a.type === 'LIABILITY')
-    const equity     = accounts.filter((a: any) => a.type === 'EQUITY')
+    const accounts = rows.map((a: any) => ({
+      ...a,
+      totalDebit: Number(a.totalDebit),
+      totalCredit: Number(a.totalCredit),
+      balance: naturalBalance(a.type, Number(a.totalDebit), Number(a.totalCredit)),
+    }));
 
-    const totalAssets      = assets.reduce((s: number, a: any) => s + Number(a.balance || 0), 0)
-    const totalLiabilities = liabilities.reduce((s: number, a: any) => s + Number(a.balance || 0), 0)
-    const totalEquity      = equity.reduce((s: number, a: any) => s + Number(a.balance || 0), 0)
+    const assets = accounts.filter((a: any) => a.type === 'ASSET');
+    const liabilities = accounts.filter((a: any) => a.type === 'LIABILITY');
+    const equity = accounts.filter((a: any) => a.type === 'EQUITY');
+
+    const sum = (list: any[]) => list.reduce((s: number, a: any) => s + a.balance, 0);
+    const income = sum(accounts.filter((a: any) => a.type === 'INCOME'));
+    const expense = sum(accounts.filter((a: any) => a.type === 'EXPENSE'));
+    const currentProfit = income - expense;
+
+    // Shown as an equity line (not a real account)
+    equity.push({
+      id: 'current-period-profit',
+      code: '—',
+      name: 'Current Period Profit / (Loss)',
+      type: 'EQUITY',
+      balance: currentProfit,
+      totalDebit: 0,
+      totalCredit: 0,
+    });
+
+    const totalAssets = sum(assets);
+    const totalLiabilities = sum(liabilities);
+    const totalEquity = sum(equity);
 
     return {
       success: true,
       data: {
-        assets, liabilities, equity,
-        totalAssets, totalLiabilities, totalEquity,
+        assets,
+        liabilities,
+        equity,
+        totalAssets,
+        totalLiabilities,
+        totalEquity,
+        currentProfit,
         isBalanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 1,
         asOf,
       },
