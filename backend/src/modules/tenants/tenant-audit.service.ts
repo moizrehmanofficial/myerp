@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import { requestInfo } from '../../common/request-context';
 
 @Injectable()
 export class TenantAuditService {
@@ -16,23 +17,30 @@ export class TenantAuditService {
     userAgent?: string;
   }) {
     try {
+      // Fill user / IP / device / browser from the current request automatically
+      const info = requestInfo();
+      const userId = data.userId || info.user?.sub || null;
+      const userName = data.userName || info.user?.name || 'Unknown';
+      const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
       const client = await this.tenantService.getTenantClient(slug);
       await client.$queryRawUnsafe(
         `INSERT INTO "audit_logs" (
           "id", "userId", "action", "module",
-          "recordId", "ipAddress", "device", "details"
+          "recordId", "ipAddress", "device", "browser", "details"
         ) VALUES (
-          gen_random_uuid(), $1::uuid, $2, $3, $4::uuid, $5, $6, $7
+          gen_random_uuid(), $1::uuid, $2, $3, $4::uuid, $5, $6, $7, $8
         )`,
-        data.userId || null,
+        userId,
         data.action,
         data.module,
-        data.recordId || null,
-        data.ipAddress || null,
-        data.userAgent || null,
+        data.recordId && uuid.test(data.recordId) ? data.recordId : null,
+        data.ipAddress || info.ip,
+        data.userAgent || info.device,
+        info.browser,
         JSON.stringify({
           description: data.description,
-          userName: data.userName || 'Unknown',
+          userName,
         }),
       );
     } catch (err) {

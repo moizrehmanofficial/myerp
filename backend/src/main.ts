@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { requestContextMiddleware } from './common/request-context';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -13,6 +14,13 @@ async function bootstrap() {
   const port = configService.get<number>('PORT') || 3001;
   const nodeEnv = configService.get<string>('NODE_ENV') || 'development';
   const isProduction = nodeEnv === 'production';
+
+  // Render / Vercel sit behind a proxy: use the visitor's real IP
+  // (needed for rate limiting and audit logs)
+  app.getHttpAdapter().getInstance().set('trust proxy', 1);
+
+  // Remember the current request (who / IP / browser) for audit logs
+  app.use(requestContextMiddleware);
 
   // ── Security ──────────────────────────────────────────
   app.use(helmet({

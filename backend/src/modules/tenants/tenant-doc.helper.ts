@@ -98,6 +98,53 @@ async function runTenantUpgrades(client: Db, slug: string) {
     );
   }
 
+  // ── Indexes (Batch 5): keep lists, reports and lookups fast as data grows ──
+  const indexes: [string, string, string][] = [
+    // [index name, table, columns]
+    ['idx_invoices_customer', 'invoices', '"customerId"'],
+    ['idx_invoices_created', 'invoices', '"isDeleted", "createdAt"'],
+    ['idx_invoices_status', 'invoices', '"paymentStatus"'],
+    ['idx_invoice_items_invoice', 'invoice_items', '"invoiceId"'],
+    ['idx_invoice_items_product', 'invoice_items', '"productId"'],
+    ['idx_sales_orders_customer', 'sales_orders', '"customerId"'],
+    ['idx_sales_orders_created', 'sales_orders', '"isDeleted", "createdAt"'],
+    ['idx_sales_items_order', 'sales_items', '"salesOrderId"'],
+    ['idx_purchase_orders_supplier', 'purchase_orders', '"supplierId"'],
+    ['idx_purchase_orders_created', 'purchase_orders', '"isDeleted", "createdAt"'],
+    ['idx_purchase_items_order', 'purchase_items', '"purchaseOrderId"'],
+    ['idx_products_name', 'products', '"name"'],
+    ['idx_products_category', 'products', '"categoryId"'],
+    ['idx_products_barcode', 'products', '"barcode"'],
+    ['idx_customers_name', 'customers', '"name"'],
+    ['idx_suppliers_name', 'suppliers', '"name"'],
+    ['idx_inventory_tx_product', 'inventory_transactions', '"productId", "createdAt"'],
+    ['idx_inventory_tx_created', 'inventory_transactions', '"createdAt"'],
+    ['idx_payments_type', 'payments', '"type", "createdAt"'],
+    ['idx_payments_customer', 'payments', '"customerId"'],
+    ['idx_payments_supplier', 'payments', '"supplierId"'],
+    ['idx_payments_invoice', 'payments', '"invoiceId"'],
+    ['idx_journal_entries_created', 'journal_entries', '"createdAt"'],
+    ['idx_journal_items_account', 'journal_items', '"accountId"'],
+    ['idx_journal_items_entry', 'journal_items', '"journalEntryId"'],
+    ['idx_audit_logs_created', 'audit_logs', '"createdAt"'],
+    ['idx_audit_logs_module', 'audit_logs', '"module", "action"'],
+    ['idx_audit_logs_user', 'audit_logs', '"userId"'],
+    ['idx_employees_status', 'employees', '"isDeleted", "status"'],
+    ['idx_attendance_employee', 'attendance', '"employeeId", "date"'],
+    ['idx_payroll_period', 'payroll', '"year", "month"'],
+    ['idx_leave_requests_employee', 'leave_requests', '"employeeId", "status"'],
+  ];
+  // Audit log "browser" column (older companies may not have it)
+  await client.$queryRawUnsafe(`ALTER TABLE "audit_logs" ADD COLUMN IF NOT EXISTS "browser" VARCHAR(100)`);
+  for (const [name, table, columns] of indexes) {
+    try {
+      await client.$queryRawUnsafe(`CREATE INDEX IF NOT EXISTS "${name}" ON "${table}" (${columns})`);
+    } catch (err: any) {
+      // A missing table/column in a very old company must not stop the rest
+      console.error(`[tenant-upgrade] index ${name} skipped:`, err?.message || err);
+    }
+  }
+
   for (const hook of upgradeHooks) {
     try {
       await hook(client, slug);

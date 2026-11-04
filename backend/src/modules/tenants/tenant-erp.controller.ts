@@ -12,8 +12,11 @@ import {
   UnauthorizedException,
   ForbiddenException,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
+import { TenantAuditInterceptor } from '../../common/interceptors/tenant-audit.interceptor';
 import { TenantPermissionGuard, userCan } from '../../common/guards/tenant-permission.guard';
+import { TENANT_ACCESS_COOKIE } from '../../common/auth-cookies';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { TenantCustomersService } from './tenant-customers.service';
@@ -37,6 +40,7 @@ import { TenantLeaveService } from './tenant-leave.service';
 
 @Controller('erp')
 @UseGuards(TenantPermissionGuard)
+@UseInterceptors(TenantAuditInterceptor)
 export class TenantErpController {
   constructor(
     private customersService: TenantCustomersService,
@@ -63,7 +67,7 @@ export class TenantErpController {
 
   // ── Verify JWT and get user payload ───────────────────
   private getPayload(req: any): any {
-    const token = req.cookies?.access_token;
+    const token = req.cookies?.[TENANT_ACCESS_COOKIE];
     if (!token) throw new UnauthorizedException('Not authenticated');
 
     let payload: any;

@@ -13,6 +13,8 @@ import { IsEmail, IsString, MinLength } from 'class-validator';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { TenantAuthService } from './tenant-auth.service';
+import { Throttle } from '@nestjs/throttler';
+import { TENANT_ACCESS_COOKIE, TENANT_REFRESH_COOKIE } from '../../common/auth-cookies';
 
 class TenantLoginDto {
   @IsEmail({}, { message: 'Please provide a valid email' })
@@ -31,7 +33,9 @@ export class TenantAuthController {
     private configService: ConfigService,
   ) {}
 
+  // Max 5 tries per 10 seconds and 20 per minute from one IP (stops password guessing)
   @Post('login')
+  @Throttle({ short: { ttl: 10000, limit: 5 }, long: { ttl: 60000, limit: 20 } })
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() dto: TenantLoginDto,
@@ -59,7 +63,7 @@ export class TenantAuthController {
     }
     return this.tenantAuthService.refresh(
       tenant.slug,
-      req.cookies?.refresh_token,
+      req.cookies?.[TENANT_REFRESH_COOKIE],
       res,
     );
   }
@@ -68,7 +72,7 @@ export class TenantAuthController {
   @HttpCode(HttpStatus.OK)
   async logout(@Req() req: any, @Res({ passthrough: true }) res: any) {
     const tenant = req.tenant;
-    const token = req.cookies?.access_token;
+    const token = req.cookies?.[TENANT_ACCESS_COOKIE];
 
     if (token && tenant) {
       try {
@@ -79,15 +83,14 @@ export class TenantAuthController {
       } catch {}
     }
 
-    res.clearCookie('access_token');
-    res.clearCookie('refresh_token');
+    this.tenantAuthService.clearAuthCookies(res);
     return { success: true, message: 'Logged out' };
   }
 
   @Get('me')
   async getProfile(@Req() req: any) {
     const tenant = req.tenant;
-    const token = req.cookies?.access_token;
+    const token = req.cookies?.[TENANT_ACCESS_COOKIE];
 
     if (!token || !tenant) {
       throw new UnauthorizedException('Not authenticated');

@@ -1,6 +1,7 @@
 import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
 import { MulterModule } from '@nestjs/platform-express';
 import { DatabaseModule } from './database/database.module';
 import { AuthModule } from './modules/auth/auth.module';
@@ -19,9 +20,10 @@ import { ScheduleModule } from '@nestjs/schedule';
       envFilePath: '.env',
     }),
     ThrottlerModule.forRoot({
+      // Per IP. Normal use is far below this; it only stops abuse/bots.
       throttlers: [
-        { name: 'short', ttl: 1000, limit: 10 },
-        { name: 'long', ttl: 60000, limit: 100 },
+        { name: 'short', ttl: 1000, limit: 30 },
+        { name: 'long', ttl: 60000, limit: 600 },
       ],
     }),
     MulterModule.register({ limits: { fileSize: 2 * 1024 * 1024 } }),
@@ -33,6 +35,10 @@ import { ScheduleModule } from '@nestjs/schedule';
     CompaniesModule,
     TenantAuthModule,
     BackupModule,
+  ],
+  providers: [
+    // Rate limiting was configured but never switched on — now it is
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
   ],
 })
 export class AppModule implements NestModule {

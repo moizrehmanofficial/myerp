@@ -10,14 +10,16 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { AuthService } from './auth.service';
+import { Throttle } from '@nestjs/throttler';
 import { LoginDto } from './dto/login.dto';
 
 @Controller('auth')
 export class AuthController {
   constructor(private authService: AuthService) {}
 
-  // POST /api/auth/login
+  // POST /api/auth/login — max 5 tries per 10 seconds / 20 per minute per IP
   @Post('login')
+  @Throttle({ short: { ttl: 10000, limit: 5 }, long: { ttl: 60000, limit: 20 } })
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() dto: LoginDto,

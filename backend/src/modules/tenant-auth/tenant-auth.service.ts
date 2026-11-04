@@ -8,6 +8,11 @@ import { TenantService } from '../tenants/tenant.service';
 import { PrismaService } from '../../database/prisma.service';
 import * as bcrypt from 'bcrypt';
 import { createHash } from 'crypto';
+import {
+  TENANT_ACCESS_COOKIE,
+  TENANT_REFRESH_COOKIE,
+  tenantCookieOptions,
+} from '../../common/auth-cookies';
 import { TenantAuditService } from '../tenants/tenant-audit.service';
 
 @Injectable()
@@ -31,18 +36,21 @@ export class TenantAuthService {
     ) as any[];
 
     if (!users || users.length === 0) {
+      await this.logFailedLogin(slug, email, 'unknown email');
       throw new UnauthorizedException('Invalid email or password');
     }
 
     const user = users[0];
 
     if (user.status !== 'ACTIVE') {
+      await this.logFailedLogin(slug, email, `account ${String(user.status).toLowerCase()}`, user);
       throw new UnauthorizedException('Your account has been suspended');
     }
 
     // Verify password
     const passwordMatch = await bcrypt.compare(password, user.password);
     if (!passwordMatch) {
+      await this.logFailedLogin(slug, email, 'wrong password', user);
       throw new UnauthorizedException('Invalid email or password');
     }
 
@@ -87,21 +95,14 @@ export class TenantAuthService {
 
     // Set cookies for cross-site tenant auth requests.
     // SameSite=None is required when frontend and API are served from different domains/subdomains.
-    const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
+    const cookieOptions = this.getCookieOptions();
 
-    const cookieOptions = {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
-      path: '/',
-    };
-
-    res.cookie('access_token', accessToken, {
+    res.cookie(TENANT_ACCESS_COOKIE, accessToken, {
       ...cookieOptions,
       maxAge: 15 * 60 * 1000,
     });
 
-    res.cookie('refresh_token', refreshToken, {
+    res.cookie(TENANT_REFRESH_COOKIE, refreshToken, {
       ...cookieOptions,
       maxAge: 7 * 24 * 60 * 60 * 1000,
     });
@@ -177,14 +178,26 @@ export class TenantAuthService {
     return createHash('sha256').update(token).digest('hex');
   }
 
-  private getCookieOptions() {
+  getCookieOptions() {
     const isProduction = this.configService.get<string>('NODE_ENV') === 'production';
-    return {
-      httpOnly: true,
-      secure: isProduction,
-      sameSite: (isProduction ? 'none' : 'lax') as 'none' | 'lax',
-      path: '/',
-    };
+    return tenantCookieOptions(isProduction);
+  }
+
+  // Clearing must use the same options, or browsers ignore it in production
+  clearAuthCookies(res: any) {
+    const options = this.getCookieOptions();
+    res.clearCookie(TENANT_ACCESS_COOKIE, options);
+    res.clearCookie(TENANT_REFRESH_COOKIE, options);
+  }
+
+  private async logFailedLogin(slug: string, email: string, reason: string, user?: any) {
+    await this.auditService.log(slug, {
+      userId: user?.id,
+      userName: user?.name || email,
+      action: 'LOGIN_FAILED',
+      module: 'auth',
+      description: `Failed login for ${email} (${reason})`,
+    });
   }
 
   async refresh(slug: string, refreshToken: string, res: any) {
@@ -245,13 +258,19 @@ export class TenantAuthService {
     );
 
     const cookieOptions = this.getCookieOptions();
-    res.cookie('access_token', accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
-    res.cookie('refresh_token', newRefreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
+    res.cookie(TENANT_ACCESS_COOKIE, accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
+    res.cookie(TENANT_REFRESH_COOKIE, newRefreshToken, { ...cookieOptions, maxAge: 7 * 24 * 60 * 60 * 1000 });
 
     return { success: true, message: 'Session refreshed' };
   }
 
   async logout(slug: string, userId: string, res: any) {
+    await this.auditService.log(slug, {
+      userId,
+      action: 'LOGOUT',
+      module: 'auth',
+      description: 'User logged out',
+    });
     try {
       const client = await this.tenantService.getTenantClient(slug);
       await client.$queryRawUnsafe(
@@ -260,8 +279,7 @@ export class TenantAuthService {
       );
     } catch {}
 
-    res.clearCookie('access_token');
-    res.clearCookie('refresh_token');
+    this.clearAuthCookies(res);
 
     return { success: true, message: 'Logged out successfully' };
   }

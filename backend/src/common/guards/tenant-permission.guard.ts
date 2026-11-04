@@ -8,6 +8,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { TenantService } from '../../modules/tenants/tenant.service';
+import { TENANT_ACCESS_COOKIE } from '../auth-cookies';
 import { ensureTenantUpgrades } from '../../modules/tenants/tenant-doc.helper';
 // Loads the accounting helper so its one-time "post old records" step is registered
 import '../../modules/tenants/tenant-accounting.helper';
@@ -153,7 +154,7 @@ export class TenantPermissionGuard implements CanActivate {
     const req = context.switchToHttp().getRequest();
 
     // ── 1. Valid tenant user token ──
-    const token = req.cookies?.access_token;
+    const token = req.cookies?.[TENANT_ACCESS_COOKIE];
     if (!token) throw new UnauthorizedException('Not authenticated');
 
     let payload: any;
