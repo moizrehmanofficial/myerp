@@ -1,147 +1,138 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
+import { ArrowLeftRight } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import { Badge, Card, Spinner, Stat, Table, TableWrap, Th, Td, Tr, EmptyState, ListToolbar, SearchInput, FilterChips } from '@/components/ui'
+import { DateRangeBar, presetRange, type Range } from '@/components/reports/ReportBits'
+import { isStockIn, movementLabel } from '@/components/products/stock'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { number, date } from '@/lib/format'
 
-function getDefaultDates() {
-  const to = new Date().toISOString().split('T')[0]
-  const from = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
-  return { from, to }
-}
+type Dir = 'all' | 'in' | 'out'
 
-export default function StockMovementReportPage() {
+export default function StockMovementPage() {
+  const [range, setRange] = useState<Range>(() => presetRange('month'))
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
-  const defaults = getDefaultDates()
-  const [from, setFrom] = useState(defaults.from)
-  const [to, setTo] = useState(defaults.to)
+  const [search, setSearch] = useState('')
+  const [dir, setDir] = useState<Dir>('all')
 
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchReport(sub, defaults.from, defaults.to)
-  }, [])
-
-  async function fetchReport(sub: string, f: string, t: string) {
+  const load = useCallback(async (r: Range) => {
     setLoading(true)
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/reports/stock-movement?from=${f}&to=${t}T23:59:59`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const res = await tenantApi.get(`/erp/reports/stock-movement?from=${r.from}&to=${r.to}`)
       setData(res.data.data)
-    } catch { toast.error('Failed to load report') }
-    finally { setLoading(false) }
-  }
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load stock movements.'))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  function getTxStyle(type: string) {
-    const isIn = type === 'IN' || type === 'ADJUSTMENT_IN'
-    return { color: isIn ? '#16A34A' : '#DC2626', label: isIn ? '↑ IN' : '↓ OUT', sign: isIn ? '+' : '-' }
-  }
+  useEffect(() => {
+    load(range)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const s = data?.summary || {}
+  const all: any[] = data?.movements || []
+  const rows = useMemo(() => {
+    const q = search.toLowerCase()
+    return all.filter((m) => {
+      if (dir === 'in' && !isStockIn(m.type)) return false
+      if (dir === 'out' && isStockIn(m.type)) return false
+      return !q || String(m.productName).toLowerCase().includes(q) || String(m.reference || '').toLowerCase().includes(q)
+    })
+  }, [all, search, dir])
 
   return (
     <TenantLayout
-      title="Stock Movement Report"
-      subtitle="All inventory transactions by date range"
+      title="Stock movement"
+      subtitle="Every time stock came in or went out"
       requiredModule="reports"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
-            style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <span style={{ color: '#94A3B8' }}>to</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
-            style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <button onClick={() => fetchReport(subdomain, from, to)}
-            style={{ padding: '8px 16px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Apply</button>
-          <ExportButton
-            data={data?.movements || []}
-            filename={`stock-movement-${from}-${to}`}
-            title="Stock Movement Report"
-            subtitle={`Period: ${from} to ${to}`}
-            columns={[
-              { header: 'Date', value: (r) => new Date(r.createdAt).toLocaleDateString(), width: 15 },
-              { header: 'Product', value: (r) => r.productName, width: 25 },
-              { header: 'SKU', value: (r) => r.productSku || '', width: 15 },
-              { header: 'Type', value: (r) => r.type, width: 15 },
-              { header: 'Quantity', value: (r) => Number(r.quantity || 0), width: 12 },
-              { header: 'Reference', value: (r) => r.reference || '', width: 20 },
-              { header: 'Notes', value: (r) => r.notes || '', width: 25 },
-            ]}
-            disabled={!data}
-          />
-        </div>
+        <ExportButton
+          data={rows}
+          filename={`stock-movement-${range.from}-${range.to}`}
+          title="Stock movement"
+          subtitle={`${date(range.from)} to ${date(range.to)}`}
+          disabled={!data}
+          columns={[
+            { header: 'Date', value: (r: any) => date(r.createdAt), width: 14 },
+            { header: 'Product', value: (r: any) => r.productName, width: 28 },
+            { header: 'What happened', value: (r: any) => movementLabel(r.type, r.reference).text, width: 20 },
+            { header: 'Reference', value: (r: any) => r.reference || '', width: 16 },
+            { header: 'Qty', value: (r: any) => (isStockIn(r.type) ? '+' : '-') + r.quantity, width: 10 },
+          ]}
+        />
       }
     >
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <>
-          {/* Summary */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px', marginBottom: '24px', maxWidth: '600px' }}>
-            {[
-              { label: 'Total Transactions', value: data?.summary?.totalTransactions || 0, color: '#1D4ED8' },
-              { label: 'Total Stock IN', value: `+${(data?.summary?.totalIn || 0).toLocaleString()}`, color: '#16A34A' },
-              { label: 'Total Stock OUT', value: `-${(data?.summary?.totalOut || 0).toLocaleString()}`, color: '#DC2626' },
-            ].map((c) => (
-              <div key={c.label} style={{ background: '#fff', borderRadius: '12px', padding: '14px', border: '1px solid #E2E8F0' }}>
-                <p style={{ fontSize: '11px', fontWeight: 600, color: '#94A3B8', textTransform: 'uppercase', marginBottom: '6px' }}>{c.label}</p>
-                <p style={{ fontSize: '18px', fontWeight: 800, color: c.color }}>{c.value}</p>
-              </div>
-            ))}
-          </div>
-
-          {(!data?.movements || data.movements.length === 0) ? (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '60px', textAlign: 'center' }}>
-              <p style={{ color: '#94A3B8' }}>No stock movements in this period</p>
+      <div className="flex flex-col gap-5">
+        <DateRangeBar initial={range} onApply={(r) => { setRange(r); load(r) }} />
+        {loading && !data ? (
+          <Spinner label="Loading movements" />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+              <Stat label="Units in" value={<span className="text-good">+{number(s.totalIn)}</span>} sub="Purchases, returns, added by hand" />
+              <Stat label="Units out" value={<span className="text-bad">−{number(s.totalOut)}</span>} sub="Sales, returns, removed by hand" />
+              <Stat label="Movements" value={number(s.totalTransactions)} className="col-span-2 lg:col-span-1" />
             </div>
-          ) : (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                    {['Date', 'Product', 'SKU', 'Type', 'Quantity', 'Reference', 'Notes'].map((h) => (
-                      <th key={h} style={{ padding: '12px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.movements.map((tx: any, i: number) => {
-                    const ts = getTxStyle(tx.type)
-                    return (
-                      <tr key={tx.id} style={{ borderBottom: i < data.movements.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                        onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                        onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                      >
-                        <td style={{ padding: '12px 14px', fontSize: '12px', color: '#64748B' }}>{new Date(tx.createdAt).toLocaleDateString()}</td>
-                        <td style={{ padding: '12px 14px', fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>{tx.productName}</td>
-                        <td style={{ padding: '12px 14px' }}>
-                          <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#7C3AED', background: '#FAF5FF', padding: '2px 6px', borderRadius: '4px' }}>{tx.productSku}</span>
-                        </td>
-                        <td style={{ padding: '12px 14px' }}>
-                          <span style={{ padding: '3px 8px', borderRadius: '99px', fontSize: '11px', fontWeight: 700, color: ts.color, background: ts.color === '#16A34A' ? '#F0FDF4' : '#FEF2F2' }}>{ts.label}</span>
-                        </td>
-                        <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 800, color: ts.color }}>
-                          {ts.sign}{Number(tx.quantity || 0).toLocaleString()}
-                        </td>
-                        <td style={{ padding: '12px 14px', fontSize: '11px', color: '#64748B', fontFamily: 'monospace' }}>{tx.reference || '—'}</td>
-                        <td style={{ padding: '12px 14px', fontSize: '12px', color: '#64748B' }}>{tx.notes || '—'}</td>
+            <Card>
+              <ListToolbar>
+                <SearchInput placeholder="Search product or reference" onSearch={setSearch} />
+                <FilterChips<Dir>
+                  options={[{ key: 'all', label: 'All' }, { key: 'in', label: 'Stock in' }, { key: 'out', label: 'Stock out' }]}
+                  value={dir}
+                  onChange={setDir}
+                />
+              </ListToolbar>
+              {rows.length === 0 ? (
+                <EmptyState icon={<ArrowLeftRight />} title="No stock movements" description="Try other dates." />
+              ) : (
+                <TableWrap>
+                  <Table>
+                    <thead>
+                      <tr>
+                        <Th>Product</Th>
+                        <Th className="hidden md:table-cell">What happened</Th>
+                        <Th className="hidden lg:table-cell">Reference</Th>
+                        <Th align="right">Qty</Th>
                       </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                    </thead>
+                    <tbody>
+                      {rows.map((m) => {
+                        const inn = isStockIn(m.type)
+                        const l = movementLabel(m.type, m.reference)
+                        return (
+                          <Tr key={m.id}>
+                            <Td>
+                              <p className="font-medium">{m.productName}</p>
+                              <p className="text-xs text-ink-3">
+                                {date(m.createdAt)}
+                                <span className="md:hidden">, {l.text}</span>
+                                {m.notes && m.notes !== l.text ? `, ${m.notes}` : ''}
+                              </p>
+                            </Td>
+                            <Td className="hidden md:table-cell"><Badge tone={l.tone}>{l.text}</Badge></Td>
+                            <Td className="hidden text-ink-2 lg:table-cell">{m.reference && m.reference !== 'MANUAL_ADJUSTMENT' ? m.reference : '—'}</Td>
+                            <Td align="right" className={inn ? 'font-medium text-good' : 'font-medium text-bad'}>
+                              {inn ? '+' : '−'}{number(m.quantity)} <span className="text-xs font-normal text-ink-3">{m.productUnit || 'pcs'}</span>
+                            </Td>
+                          </Tr>
+                        )
+                      })}
+                    </tbody>
+                  </Table>
+                </TableWrap>
+              )}
+            </Card>
+          </>
+        )}
+      </div>
     </TenantLayout>
   )
 }

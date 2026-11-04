@@ -1,129 +1,199 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter } from 'next/navigation'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import toast from 'react-hot-toast'
+import { ArrowLeft, BookOpen } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import ExportButton from '@/components/common/ExportButton'
+import { Badge, Button, Card, Field, Input, Table, TableWrap, Th, Td, Tr, Spinner, EmptyState, Stat, buttonStyles } from '@/components/ui'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { money, date } from '@/lib/format'
+import { useCompanyHref } from '@/lib/useCompanyHref'
+import { typeLabel, sourceLabel } from './accounting'
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
+
+const iso = (d: Date) => {
+  const z = new Date(d.getTime() - d.getTimezoneOffset() * 60000)
+  return z.toISOString().slice(0, 10)
+}
 
 export default function AccountLedgerClient({ id }: { id: string }) {
-  const router = useRouter()
+  const href = useCompanyHref()
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
+  const [from, setFrom] = useState(() => {
+    const d = new Date()
+    return iso(new Date(d.getFullYear(), d.getMonth(), 1))
+  })
+  const [to, setTo] = useState(() => iso(new Date()))
 
-  const today = new Date().toISOString().split('T')[0]
-  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
-  const [from, setFrom] = useState(monthAgo)
-  const [to, setTo] = useState(today)
-
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchLedger(sub, monthAgo, today)
-  }, [id])
-
-  async function fetchLedger(sub: string, f: string, t: string) {
+  const load = useCallback(async (f: string, t: string) => {
     setLoading(true)
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/finance/accounts/${id}/ledger?from=${f}&to=${t}T23:59:59`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const q = new URLSearchParams()
+      if (f) q.set('from', f)
+      if (t) q.set('to', `${t}T23:59:59`)
+      const res = await tenantApi.get(`/erp/finance/accounts/${id}/ledger?${q}`)
       setData(res.data.data)
-    } catch {
-      toast.error('Failed to load ledger')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load this ledger.'))
     } finally {
       setLoading(false)
     }
+  }, [id])
+
+  useEffect(() => {
+    load(from, to)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load])
+
+  function quick(kind: 'month' | 'last' | 'year' | 'all') {
+    const d = new Date()
+    let f = ''
+    let t = iso(d)
+    if (kind === 'month') f = iso(new Date(d.getFullYear(), d.getMonth(), 1))
+    if (kind === 'last') {
+      f = iso(new Date(d.getFullYear(), d.getMonth() - 1, 1))
+      t = iso(new Date(d.getFullYear(), d.getMonth(), 0))
+    }
+    if (kind === 'year') f = iso(new Date(d.getFullYear(), 0, 1))
+    setFrom(f)
+    setTo(t)
+    load(f, t)
   }
 
-  const TYPE_COLORS: Record<string, string> = {
-    ASSET: '#1D4ED8', LIABILITY: '#DC2626', EQUITY: '#7C3AED', INCOME: '#16A34A', EXPENSE: '#EA580C',
-  }
+  const account = data?.account
+  const entries: any[] = data?.entries || []
+  const opening = Number(data?.openingBalance || 0)
+  const closing = Number(data?.closingBalance ?? opening)
+  const totalDr = entries.reduce((s, e) => s + Number(e.debit || 0), 0)
+  const totalCr = entries.reduce((s, e) => s + Number(e.credit || 0), 0)
 
   return (
     <TenantLayout
-      title={data?.account?.name || 'Account Ledger'}
-      subtitle={`Code: ${data?.account?.code || ''} • ${data?.account?.type || ''}`}
+      title={account ? `${account.code} ${account.name}` : 'Account ledger'}
+      subtitle={account ? `${typeLabel(account.type)} account. Every entry posted to it, with the running balance.` : undefined}
       requiredModule="finance"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <span style={{ color: '#94A3B8' }}>to</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <button onClick={() => fetchLedger(subdomain, from, to)} style={{ padding: '8px 14px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Apply</button>
-          <button onClick={() => router.push('/erp/finance/accounts')} style={{ padding: '8px 14px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>← Back</button>
-        </div>
+        <>
+          <Link href={href('/erp/finance/ledger')} className={buttonStyles({ variant: 'ghost' })}>
+            <ArrowLeft className="size-4" aria-hidden />
+            All accounts
+          </Link>
+          <ExportButton
+            data={entries}
+            filename={`ledger-${account?.code || id}`}
+            title={account ? `Ledger: ${account.code} ${account.name}` : 'Ledger'}
+            subtitle={`${from ? date(from) : 'Start'} to ${date(to)}. Opening ${money(opening)}, closing ${money(closing)}`}
+            columns={[
+              { header: 'Date', value: (r: any) => date(r.createdAt), width: 14 },
+              { header: 'Entry', value: (r: any) => r.entryNumber, width: 14 },
+              { header: 'Description', value: (r: any) => r.description || '', width: 34 },
+              { header: 'Debit', value: (r: any) => Number(r.debit || 0).toFixed(2), width: 14 },
+              { header: 'Credit', value: (r: any) => Number(r.credit || 0).toFixed(2), width: 14 },
+              { header: 'Balance', value: (r: any) => Number(r.runningBalance || 0).toFixed(2), width: 16 },
+            ]}
+          />
+        </>
       }
     >
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <>
-          {/* Account Summary */}
-          <div style={{ background: '#1E3A5F', borderRadius: '14px', padding: '20px 24px', marginBottom: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <div style={{ fontSize: '20px', fontWeight: 800, color: '#fff', marginBottom: '4px' }}>{data?.account?.name}</div>
-              <div style={{ fontSize: '13px', color: '#93C5FD' }}>Code: {data?.account?.code} • Type: {data?.account?.type}</div>
+      <div className="flex flex-col gap-5">
+        <Card className="p-4 sm:p-5">
+          <form
+            className="flex flex-col gap-3 md:flex-row md:items-end"
+            onSubmit={(e) => {
+              e.preventDefault()
+              load(from, to)
+            }}
+          >
+            <div className="grid grid-cols-2 gap-3 md:flex">
+              <Field label="From">{(fid) => <Input id={fid} type="date" value={from} onChange={(e) => setFrom(e.target.value)} />}</Field>
+              <Field label="To">{(fid) => <Input id={fid} type="date" value={to} onChange={(e) => setTo(e.target.value)} />}</Field>
             </div>
-            <div style={{ textAlign: 'right' }}>
-              <div style={{ fontSize: '12px', color: '#93C5FD', marginBottom: '4px' }}>Current Balance</div>
-              <div style={{ fontSize: '24px', fontWeight: 900, color: '#fff' }}>PKR {Number(data?.account?.balance || 0).toLocaleString()}</div>
+            <Button type="submit" variant="secondary">Show</Button>
+            <div className="flex flex-wrap gap-1 md:ml-auto">
+              {([
+                ['month', 'This month'],
+                ['last', 'Last month'],
+                ['year', 'This year'],
+                ['all', 'All time'],
+              ] as const).map(([k, l]) => (
+                <Button key={k} size="sm" variant="ghost" onClick={() => quick(k)}>
+                  {l}
+                </Button>
+              ))}
             </div>
-          </div>
+          </form>
+        </Card>
 
-          {/* Entries Table */}
-          {(!data?.entries || data.entries.length === 0) ? (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '60px', textAlign: 'center' }}>
-              <div style={{ fontSize: '40px', marginBottom: '12px' }}>📋</div>
-              <p style={{ color: '#94A3B8', fontSize: '14px' }}>No transactions in this period</p>
+        {loading && !data ? (
+          <Spinner label="Loading ledger" />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Stat label="Opening balance" value={money(opening)} sub={from ? `On ${date(from)}` : 'From the start'} />
+              <Stat label="Debits" value={money(totalDr)} sub={plural(entries.filter((e) => Number(e.debit) > 0).length, 'entry', 'entries')} />
+              <Stat label="Credits" value={money(totalCr)} sub={plural(entries.filter((e) => Number(e.credit) > 0).length, 'entry', 'entries')} />
+              <Stat label="Closing balance" value={money(closing)} sub={`On ${date(to)}`} />
             </div>
-          ) : (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                    {['Date', 'Entry No', 'Description', 'Reference', 'Debit', 'Credit', 'Balance'].map((h) => (
-                      <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.entries.map((entry: any, i: number) => (
-                    <tr key={entry.id} style={{ borderBottom: i < data.entries.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                    >
-                      <td style={{ padding: '12px 16px', fontSize: '12px', color: '#64748B' }}>
-                        {new Date(entry.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
-                      </td>
-                      <td style={{ padding: '12px 16px' }}>
-                        <span style={{ fontFamily: 'monospace', fontSize: '12px', fontWeight: 700, color: '#1D4ED8', background: '#EFF6FF', padding: '2px 8px', borderRadius: '6px' }}>{entry.entryNumber}</span>
-                      </td>
-                      <td style={{ padding: '12px 16px', fontSize: '13px', color: '#374151' }}>{entry.description}</td>
-                      <td style={{ padding: '12px 16px', fontSize: '12px', color: '#94A3B8', fontFamily: 'monospace' }}>{entry.reference || '—'}</td>
-                      <td style={{ padding: '12px 16px', fontSize: '13px', fontWeight: 600, color: '#16A34A' }}>
-                        {entry.debit > 0 ? `PKR ${entry.debit.toLocaleString()}` : '—'}
-                      </td>
-                      <td style={{ padding: '12px 16px', fontSize: '13px', fontWeight: 600, color: '#DC2626' }}>
-                        {entry.credit > 0 ? `PKR ${entry.credit.toLocaleString()}` : '—'}
-                      </td>
-                      <td style={{ padding: '12px 16px', fontSize: '13px', fontWeight: 700, color: entry.runningBalance >= 0 ? '#0F172A' : '#DC2626' }}>
-                        PKR {entry.runningBalance.toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+
+            <Card>
+              {entries.length === 0 ? (
+                <EmptyState icon={<BookOpen />} title="No entries in these dates" description="Pick a wider date range, or All time." />
+              ) : (
+                <TableWrap>
+                  <Table className="min-w-[640px]">
+                    <thead>
+                      <tr>
+                        <Th>Date</Th>
+                        <Th>Details</Th>
+                        <Th align="right">Debit</Th>
+                        <Th align="right">Credit</Th>
+                        <Th align="right">Balance</Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <Tr className="bg-subtle/60">
+                        <Td className="whitespace-nowrap text-ink-3">{from ? date(from) : '—'}</Td>
+                        <Td className="text-ink-2">Opening balance</Td>
+                        <Td />
+                        <Td />
+                        <Td align="right" className="font-medium">{money(opening)}</Td>
+                      </Tr>
+                      {entries.map((e, i) => (
+                        <Tr key={`${e.id}-${i}`}>
+                          <Td className="whitespace-nowrap text-ink-2">{date(e.createdAt)}</Td>
+                          <Td>
+                            <p className="font-medium">{e.description || 'Journal entry'}</p>
+                            <p className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3">
+                              <span className="num">{e.entryNumber}</span>
+                              <Badge>{sourceLabel(e.sourceType)}</Badge>
+                              {e.reference && <span>Ref {e.reference}</span>}
+                            </p>
+                          </Td>
+                          <Td align="right">{Number(e.debit) > 0 ? money(e.debit) : ''}</Td>
+                          <Td align="right">{Number(e.credit) > 0 ? money(e.credit) : ''}</Td>
+                          <Td align="right" className="font-medium whitespace-nowrap">{money(e.runningBalance)}</Td>
+                        </Tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr className="bg-subtle">
+                        <td colSpan={2} className="px-4 py-3 text-sm font-semibold">Closing balance</td>
+                        <td className="num px-4 py-3 text-right text-sm font-semibold">{money(totalDr)}</td>
+                        <td className="num px-4 py-3 text-right text-sm font-semibold">{money(totalCr)}</td>
+                        <td className="num px-4 py-3 text-right text-sm font-semibold">{money(closing)}</td>
+                      </tr>
+                    </tfoot>
+                  </Table>
+                </TableWrap>
+              )}
+            </Card>
+          </>
+        )}
+      </div>
     </TenantLayout>
   )
 }

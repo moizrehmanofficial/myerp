@@ -1,24 +1,27 @@
 'use client'
 
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { LayoutDashboard, Building2, Puzzle, Users, HardDrive, LogOut, ShieldCheck, X } from 'lucide-react'
 import api from '@/lib/axios'
+import { cn } from '@/utils/utils'
 
 interface AdminSidebarProps {
   activePath: string
   admin: any
+  mobileOpen: boolean
+  onCloseMobile: () => void
 }
 
-const navItems = [
-  { label: 'Dashboard', icon: '📊', path: '/dashboard' },
-  { label: 'Companies', icon: '🏢', path: '/companies' },
-  { label: 'Modules', icon: '📦', path: '/modules' },
-  { label: 'Users', icon: '👥', path: '/users' },
-  { label: 'Settings', icon: '⚙️', path: '/settings' },
-  { label: 'Backup', path: '/backup', icon: '💾' }
+const menuItems = [
+  { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },
+  { label: 'Companies', icon: Building2, path: '/companies' },
+  { label: 'Modules', icon: Puzzle, path: '/modules' },
+  { label: 'Admin users', icon: Users, path: '/users' },
+  { label: 'Backups', icon: HardDrive, path: '/backup' },
 ]
 
-export default function AdminSidebar({ activePath, admin }: AdminSidebarProps) {
+export default function AdminSidebar({ activePath, admin, mobileOpen, onCloseMobile }: AdminSidebarProps) {
   const router = useRouter()
 
   async function handleLogout() {
@@ -29,124 +32,74 @@ export default function AdminSidebar({ activePath, admin }: AdminSidebarProps) {
     router.push('/login')
   }
 
+  const initials = String(admin?.name || 'A')
+    .split(' ')
+    .map((p: string) => p[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
+
   return (
-    <aside style={{
-      width: '240px', minHeight: '100vh',
-      background: '#1E3A5F', position: 'fixed',
-      left: 0, top: 0, display: 'flex',
-      flexDirection: 'column', zIndex: 100,
-    }}>
-      {/* Logo */}
-      <div style={{
-        padding: '24px 20px',
-        borderBottom: '1px solid rgba(255,255,255,0.1)',
-        display: 'flex', alignItems: 'center', gap: '12px',
-      }}>
-        <div style={{
-          width: '38px', height: '38px',
-          background: 'rgba(255,255,255,0.15)',
-          borderRadius: '10px', display: 'flex',
-          alignItems: 'center', justifyContent: 'center', fontSize: '18px',
-        }}>🛡️</div>
-        <div>
-          <div style={{ color: '#fff', fontWeight: 700, fontSize: '16px', lineHeight: 1 }}>MyERP</div>
-          <div style={{ color: '#93C5FD', fontSize: '11px', marginTop: '3px' }}>Super Admin</div>
-        </div>
-      </div>
-
-      {/* Nav */}
-      <nav style={{ flex: 1, padding: '16px 12px' }}>
-        <p style={{
-          color: '#64748B', fontSize: '10px', fontWeight: 600,
-          textTransform: 'uppercase', letterSpacing: '0.1em',
-          padding: '0 8px', marginBottom: '8px',
-        }}>Navigation</p>
-        {navItems.map((item) => {
-          const isActive = activePath === item.path
-          return (
-            <button
-              key={item.path}
-              onClick={() => router.push(item.path)}
-              style={{
-                width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
-                padding: '10px 12px', borderRadius: '10px', border: 'none',
-                cursor: 'pointer', marginBottom: '4px',
-                background: isActive ? 'rgba(255,255,255,0.15)' : 'transparent',
-                color: isActive ? '#fff' : '#94A3B8',
-                fontSize: '14px', fontWeight: isActive ? 600 : 400,
-                fontFamily: 'Inter, sans-serif', textAlign: 'left',
-                transition: 'all 0.15s',
-              }}
-              onMouseEnter={(e) => {
-                if (!isActive) {
-                  e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
-                  e.currentTarget.style.color = '#fff'
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!isActive) {
-                  e.currentTarget.style.background = 'transparent'
-                  e.currentTarget.style.color = '#94A3B8'
-                }
-              }}
-            >
-              <span style={{ fontSize: '16px', width: '20px', textAlign: 'center' }}>{item.icon}</span>
-              {item.label}
-              {isActive && <span style={{ marginLeft: 'auto', fontSize: '12px' }}>›</span>}
-            </button>
-          )
-        })}
-      </nav>
-
-      {/* User + Logout */}
-      <div style={{ padding: '16px 12px', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '10px',
-          padding: '10px 12px', marginBottom: '8px',
-        }}>
-          <div style={{
-            width: '34px', height: '34px', borderRadius: '50%',
-            background: '#2E86AB', flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontWeight: 700, fontSize: '14px',
-          }}>
-            {admin?.name?.charAt(0) || 'A'}
+    <>
+      {mobileOpen && <div className="fixed inset-0 z-[90] bg-nav/50 lg:hidden" onClick={onCloseMobile} aria-hidden />}
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-[100] flex w-[248px] flex-col bg-nav transition-transform duration-200',
+          '-translate-x-full lg:translate-x-0',
+          mobileOpen && 'translate-x-0',
+        )}
+        aria-label="Admin navigation"
+      >
+        <div className="flex h-16 shrink-0 items-center gap-3 border-b border-white/10 px-4">
+          <span className="flex size-9 items-center justify-center rounded-lg bg-white/10 text-white">
+            <ShieldCheck className="size-[18px]" strokeWidth={1.8} aria-hidden />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[15px] font-semibold text-white">MyERP</p>
+            <p className="text-xs text-nav-muted">Platform admin</p>
           </div>
-          <div style={{ overflow: 'hidden' }}>
-            <div style={{
-              color: '#fff', fontSize: '13px', fontWeight: 600,
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>{admin?.name}</div>
-            <div style={{
-              color: '#64748B', fontSize: '11px',
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>{admin?.email}</div>
-          </div>
+          <button type="button" onClick={onCloseMobile} className="rounded-md p-1.5 text-nav-muted hover:bg-nav-hover hover:text-white lg:hidden" aria-label="Close menu">
+            <X className="size-5" />
+          </button>
         </div>
-        <button
-          onClick={handleLogout}
-          style={{
-            width: '100%', padding: '9px 12px',
-            background: 'transparent',
-            border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: '10px', color: '#FCA5A5',
-            fontSize: '13px', fontWeight: 500,
-            cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-            display: 'flex', alignItems: 'center',
-            justifyContent: 'center', gap: '6px',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(239,68,68,0.15)'
-            e.currentTarget.style.color = '#fff'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'transparent'
-            e.currentTarget.style.color = '#FCA5A5'
-          }}
-        >
-          🚪 Sign Out
-        </button>
-      </div>
-    </aside>
+
+        <nav className="flex-1 overflow-y-auto px-3 py-3">
+          <ul className="flex flex-col gap-0.5">
+            {menuItems.map((item) => {
+              const Icon = item.icon
+              const active = activePath === item.path || activePath.startsWith(item.path + '/')
+              return (
+                <li key={item.path}>
+                  <Link
+                    href={item.path}
+                    onClick={onCloseMobile}
+                    aria-current={active ? 'page' : undefined}
+                    className={cn(
+                      'relative flex h-10 items-center gap-3 rounded-lg px-3 text-[14px] text-nav-text transition-colors hover:bg-nav-hover hover:text-white',
+                      active && 'bg-nav-active font-medium text-white',
+                    )}
+                  >
+                    {active && <span className="absolute inset-y-2 left-0 w-[3px] rounded-r bg-[#2dd4bf]" aria-hidden />}
+                    <Icon className="size-[18px] shrink-0" strokeWidth={1.8} aria-hidden />
+                    {item.label}
+                  </Link>
+                </li>
+              )
+            })}
+          </ul>
+        </nav>
+
+        <div className="flex shrink-0 items-center gap-3 border-t border-white/10 p-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[#2dd4bf]/15 text-[13px] font-semibold text-[#5eead4]">{initials}</div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[13.5px] font-medium text-white">{admin?.name || 'Super Admin'}</p>
+            <p className="truncate text-xs text-nav-muted">{admin?.email || ''}</p>
+          </div>
+          <button type="button" onClick={handleLogout} className="rounded-md p-2 text-nav-muted hover:bg-nav-hover hover:text-white" aria-label="Sign out" title="Sign out">
+            <LogOut className="size-[18px]" strokeWidth={1.8} />
+          </button>
+        </div>
+      </aside>
+    </>
   )
 }

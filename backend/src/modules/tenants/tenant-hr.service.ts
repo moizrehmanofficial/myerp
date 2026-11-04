@@ -1,6 +1,7 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
-import { ensureTenantUpgrades, nextDocNumber } from './tenant-doc.helper';
+import { ensureTenantUpgrades, nextDocNumber, round2, TX_OPTIONS } from './tenant-doc.helper';
+import { ACC, cashAccountFor, postJournal, reverseSource } from './tenant-accounting.helper';
 import { TenantAuditService } from './tenant-audit.service';
 
 @Injectable()
@@ -63,6 +64,7 @@ export class TenantHRService {
 
   async createEmployee(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    if (!String(body.name || '').trim()) throw new BadRequestException('Enter the employee name');
 
     // Generate employee code (unique, never repeats)
     await ensureTenantUpgrades(client, slug);
@@ -103,7 +105,7 @@ export class TenantHRService {
       `UPDATE "employees"
        SET "name" = $1, "email" = $2, "phone" = $3, "cnic" = $4,
            "department" = $5, "designation" = $6, "salary" = $7,
-           "status" = $8, "updatedAt" = NOW()
+           "status" = $8, "joiningDate" = $10::timestamp, "updatedAt" = NOW()
        WHERE "id" = $9::uuid AND "isDeleted" = false
        RETURNING *`,
       body.name,
@@ -115,6 +117,7 @@ export class TenantHRService {
       parseFloat(body.salary) || 0,
       body.status || 'ACTIVE',
       id,
+      body.joiningDate || null,
     ) as any[];
 
     if (!result.length) throw new NotFoundException('Employee not found');
@@ -337,13 +340,29 @@ export class TenantHRService {
       ) as any[];
 
       const att = attendanceResult[0];
-      const presentDays = Number(att.present || 0) + (Number(att.halfDay || 0) * 0.5);
-      const absentDays = Number(att.absent || 0);
+      // Absent = 1 day off pay, half day = half a day off pay
+      const absentDays = Number(att.absent || 0) + Number(att.halfDay || 0) * 0.5;
+
+      // Approved UNPAID leave in this month is also not paid (days counted in SQL,
+      // so time zones can't shift them)
+      const monthFirst = `${year}-${String(month).padStart(2, '0')}-01`;
+      const monthLast = `${year}-${String(month).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+      const unpaid = (await client.$queryRawUnsafe(
+        `SELECT COALESCE(SUM(LEAST(lr."endDate"::date, $3::date) - GREATEST(lr."startDate"::date, $2::date) + 1), 0)::int AS "days"
+         FROM "leave_requests" lr
+         JOIN "leave_types" lt ON lt."id" = lr."leaveTypeId"
+         WHERE lr."employeeId" = $1::uuid AND lr."status" = 'APPROVED' AND lt."isPaid" = false
+           AND lr."startDate"::date <= $3::date AND lr."endDate"::date >= $2::date`,
+        emp.id,
+        monthFirst,
+        monthLast,
+      )) as any[];
+      const unpaidDays = Number(unpaid[0]?.days || 0);
 
       const basicSalary = Number(emp.salary || 0);
       const perDaySalary = basicSalary / daysInMonth;
-      const deductions = absentDays * perDaySalary;
-      const netSalary = basicSalary - deductions;
+      const deductions = round2((absentDays + unpaidDays) * perDaySalary);
+      const netSalary = round2(basicSalary - deductions);
 
       await client.$queryRawUnsafe(
         `INSERT INTO "payroll" (
@@ -369,27 +388,70 @@ export class TenantHRService {
     return { success: true, message: `Generated payroll for ${generated} employees` };
   }
 
+  // Edit a salary line. Marking it PAID posts it to the accounts
+  // (Dr Salaries Expense, Cr Cash/Bank); un-marking reverses that.
   async updatePayrollRecord(slug: string, id: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
-    const allowances = parseFloat(body.allowances) || 0;
-    const deductions = parseFloat(body.deductions) || 0;
-    const tax = parseFloat(body.tax) || 0;
-    const basicSalary = parseFloat(body.basicSalary) || 0;
-    const netSalary = basicSalary + allowances - deductions - tax;
+    const num = (v: any, fallback: number) => (v === undefined || v === null || v === '' ? fallback : round2(parseFloat(v) || 0));
 
-    const result = await client.$queryRawUnsafe(
-      `UPDATE "payroll"
-       SET "basicSalary" = $1, "allowances" = $2, "deductions" = $3,
-           "tax" = $4, "netSalary" = $5, "status" = $6
-       WHERE "id" = $7::uuid
-       RETURNING *`,
-      basicSalary, allowances, deductions, tax,
-      netSalary < 0 ? 0 : netSalary,
-      body.status || 'PENDING',
-      id,
-    ) as any[];
+    const updated = await client.$transaction(async (tx: any) => {
+      const rows = (await tx.$queryRawUnsafe(
+        `SELECT p.*, e."name" AS "employeeName" FROM "payroll" p
+         JOIN "employees" e ON e."id" = p."employeeId"
+         WHERE p."id" = $1::uuid FOR UPDATE OF p`,
+        id,
+      )) as any[];
+      if (!rows.length) throw new NotFoundException('Payroll record not found');
+      const old = rows[0];
 
-    return { success: true, message: 'Payroll updated', data: result[0] };
+      const basicSalary = num(body.basicSalary, Number(old.basicSalary));
+      const allowances = num(body.allowances, Number(old.allowances));
+      const deductions = num(body.deductions, Number(old.deductions));
+      const tax = num(body.tax, Number(old.tax));
+      if ([basicSalary, allowances, deductions, tax].some((n) => n < 0)) {
+        throw new BadRequestException('Amounts cannot be negative');
+      }
+      const netSalary = Math.max(round2(basicSalary + allowances - deductions - tax), 0);
+      const status = String(body.status || old.status || 'PENDING').toUpperCase();
+      const method = String(body.method || old.paidMethod || 'CASH').toUpperCase();
+      const wasPaid = old.status === 'PAID';
+      const isPaid = status === 'PAID';
+
+      const result = (await tx.$queryRawUnsafe(
+        `UPDATE "payroll"
+         SET "basicSalary" = $1, "allowances" = $2, "deductions" = $3, "tax" = $4, "netSalary" = $5,
+             "status" = $6, "paidMethod" = $7, "paidAt" = $8::timestamp
+         WHERE "id" = $9::uuid
+         RETURNING *`,
+        basicSalary, allowances, deductions, tax, netSalary,
+        status,
+        isPaid ? method : null,
+        isPaid ? (wasPaid && old.paidAt ? new Date(old.paidAt).toISOString() : new Date().toISOString()) : null,
+        id,
+      )) as any[];
+
+      const changed = Number(old.netSalary) !== netSalary || old.paidMethod !== method;
+      const ref = `Salary ${old.month}/${old.year}`;
+      if (wasPaid && (!isPaid || changed)) {
+        await reverseSource(tx, 'payroll', id, `Salary payment cancelled: ${old.employeeName}`, ref);
+      }
+      if (isPaid && (!wasPaid || changed)) {
+        await postJournal(tx, {
+          description: `Salary paid: ${old.employeeName} (${ref})`,
+          reference: ref,
+          sourceType: 'payroll',
+          sourceId: id,
+          lines: [
+            { code: ACC.SALARIES, debit: netSalary, description: 'Salaries expense' },
+            { code: cashAccountFor(method), credit: netSalary, description: 'Salary paid' },
+          ],
+        });
+      }
+      return result[0];
+    }, TX_OPTIONS);
+
+    return { success: true, message: 'Payroll updated', data: updated };
   }
 }

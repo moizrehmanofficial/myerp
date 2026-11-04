@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../database/prisma.service';
 import * as bcrypt from 'bcrypt';
 
@@ -54,16 +54,17 @@ export class SuperAdminService {
   }
 
   async createModule(body: any) {
+    body.key = String(body.key || '').trim().toLowerCase();
+    body.name = String(body.name || '').trim();
+    if (!/^[a-z][a-z0-9_]{1,40}$/.test(body.key)) {
+      throw new BadRequestException('Key: lowercase letters, numbers and _ only, starting with a letter');
+    }
+    if (!body.name) throw new BadRequestException('Enter a module name');
     const existing = await this.prisma.module.findUnique({
       where: { key: body.key },
     });
 
-    if (existing) {
-      return {
-        success: false,
-        message: 'Module key already exists',
-      };
-    }
+    if (existing) throw new BadRequestException('A module with this key already exists');
 
     const module = await this.prisma.module.create({
       data: {
@@ -79,10 +80,14 @@ export class SuperAdminService {
   }
 
   async updateModule(id: string, body: any) {
-    const module = await this.prisma.module.update({
-      where: { id },
-      data: { isActive: body.isActive },
-    });
+    const found = await this.prisma.module.findUnique({ where: { id } });
+    if (!found) throw new NotFoundException('Module not found');
+    const data: any = {};
+    if (typeof body.isActive === 'boolean') data.isActive = body.isActive;
+    if (body.name !== undefined && String(body.name).trim()) data.name = String(body.name).trim();
+    if (body.description !== undefined) data.description = String(body.description || '').trim() || null;
+    if (body.sortOrder !== undefined && !isNaN(parseInt(body.sortOrder))) data.sortOrder = parseInt(body.sortOrder);
+    const module = await this.prisma.module.update({ where: { id }, data });
     return { success: true, message: 'Module updated', data: module };
   }
 
@@ -110,13 +115,17 @@ export class SuperAdminService {
   }
 
   async createAdmin(body: any) {
+    body.name = String(body.name || '').trim();
+    body.email = String(body.email || '').trim().toLowerCase();
+    if (!body.name) throw new BadRequestException('Enter a name');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) throw new BadRequestException('Enter a valid email address');
+    if (String(body.password || '').length < 8) throw new BadRequestException('Password must be at least 8 characters');
+
     const existing = await this.prisma.superAdmin.findUnique({
       where: { email: body.email },
     });
 
-    if (existing) {
-      return { success: false, message: 'Email already exists' };
-    }
+    if (existing) throw new BadRequestException('An admin with this email already exists');
 
     const hashedPassword = await bcrypt.hash(body.password, 10);
 
@@ -136,10 +145,17 @@ export class SuperAdminService {
     };
   }
 
-  async updateAdmin(id: string, body: any) {
+  async updateAdmin(id: string, body: any, currentAdminId?: string) {
+    const isActive = body.status === 'ACTIVE';
+    if (!isActive) {
+      if (id === currentAdminId) throw new BadRequestException('You cannot block your own account');
+      const others = await this.prisma.superAdmin.count({ where: { isActive: true, id: { not: id } } });
+      if (others === 0) throw new BadRequestException('At least one admin must stay active');
+    }
     const admin = await this.prisma.superAdmin.update({
       where: { id },
-      data: { isActive: body.status === 'ACTIVE' },
+      data: { isActive },
+      select: { id: true, name: true, email: true, isActive: true },
     });
     return { success: true, message: 'Admin updated', data: admin };
   }

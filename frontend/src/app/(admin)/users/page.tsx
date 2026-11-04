@@ -1,186 +1,153 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import api from '@/lib/axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { ShieldCheck, UserPlus } from 'lucide-react'
+import api from '@/lib/axios'
 import AdminLayout from '@/components/layout/AdminLayout'
+import { Button, Card, Field, Input, Modal, Spinner, Table, TableWrap, Th, Td, Tr, EmptyState, StatusBadge, useConfirm } from '@/components/ui'
+import { makePassword } from '@/components/admin/CompanyForm'
+import { apiError } from '@/lib/tenantApi'
+import { date } from '@/lib/format'
+
+const EMPTY = { name: '', email: '', password: '' }
 
 export default function AdminUsersPage() {
-  const [admins, setAdmins] = useState<any[]>([])
+  const [rows, setRows] = useState<any[]>([])
+  const [me, setMe] = useState<string>('')
   const [loading, setLoading] = useState(true)
-  const [showModal, setShowModal] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [form, setForm] = useState({ name: '', email: '', password: '' })
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState(EMPTY)
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [confirm, confirmDialog] = useConfirm()
 
-  useEffect(() => {
-    fetchAdmins()
-  }, [])
-
-  async function fetchAdmins() {
+  const load = useCallback(async () => {
     try {
-      const res = await api.get('/super-admin/admins')
-      setAdmins(res.data.data)
-    } catch {
-      toast.error('Failed to load users')
+      const r = await api.get('/super-admin/admins')
+      setRows(r.data.data || [])
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load admins.'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault()
-    if (!form.name || !form.email || !form.password) {
-      toast.error('All fields required')
-      return
-    }
-    setSubmitting(true)
+  useEffect(() => {
+    try {
+      setMe(JSON.parse(sessionStorage.getItem('admin_user') || '{}').id || '')
+    } catch {}
+    load()
+  }, [load])
+
+  async function save(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!form.name.trim()) return setError('Enter a name.')
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) return setError('Enter a valid email.')
+    if (form.password.length < 8) return setError('The password must be at least 8 characters.')
+    setError('')
+    setSaving(true)
     try {
       await api.post('/super-admin/admins', form)
-      toast.success('Admin user created!')
-      setShowModal(false)
-      setForm({ name: '', email: '', password: '' })
-      fetchAdmins()
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to create user')
+      toast.success(`${form.name.trim()} can now sign in to the admin panel`)
+      setShowForm(false)
+      load()
+    } catch (err) {
+      setError(apiError(err, 'Could not add the admin.'))
     } finally {
-      setSubmitting(false)
+      setSaving(false)
     }
   }
 
-  async function handleToggle(id: string, status: string) {
+  async function toggle(a: any) {
+    const block = a.status === 'ACTIVE'
+    if (block) {
+      const ok = await confirm({ title: `Block ${a.name}?`, message: 'They will not be able to sign in to the admin panel.', confirmLabel: 'Block', danger: true })
+      if (!ok) return
+    }
     try {
-      await api.patch(`/super-admin/admins/${id}`, {
-        status: status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE',
-      })
-      toast.success('Status updated')
-      fetchAdmins()
-    } catch {
-      toast.error('Failed to update')
+      await api.patch(`/super-admin/admins/${a.id}`, { status: block ? 'INACTIVE' : 'ACTIVE' })
+      toast.success(block ? `${a.name} blocked` : `${a.name} can sign in again`)
+      load()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not change access.'))
     }
-  }
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '10px 12px',
-    border: '1.5px solid #E2E8F0', borderRadius: '8px',
-    fontSize: '13px', outline: 'none',
-    fontFamily: 'Inter, sans-serif', background: '#fff',
-    boxSizing: 'border-box',
   }
 
   return (
     <AdminLayout
-      title="Admin Users"
-      subtitle="Manage Super Admin accounts"
-      headerRight={
-        <button onClick={() => setShowModal(true)} style={{ padding: '10px 18px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-          ➕ Add Admin User
-        </button>
-      }
+      title="Admin users"
+      subtitle="People who can manage companies, modules and backups"
+      headerRight={<Button icon={<UserPlus className="size-4" />} onClick={() => { setForm(EMPTY); setError(''); setShowForm(true) }}>Add admin</Button>}
     >
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                {['User', 'Email', 'Role', 'Status', 'Created', 'Actions'].map((h) => (
-                  <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {admins.map((admin, i) => (
-                <tr key={admin.id} style={{ borderBottom: i < admins.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                  onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                >
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '15px', fontWeight: 700, color: '#1D4ED8' }}>
-                        {admin.name?.charAt(0)}
-                      </div>
-                      <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{admin.name}</span>
-                    </div>
-                  </td>
-                  <td style={{ padding: '14px 16px', fontSize: '13px', color: '#64748B' }}>{admin.email}</td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <span style={{ padding: '4px 10px', background: '#FFF7ED', color: '#EA580C', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>
-                      {admin.role}
-                    </span>
-                  </td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <span style={{
-                      padding: '4px 10px', borderRadius: '99px', fontSize: '11px', fontWeight: 600,
-                      background: admin.status === 'ACTIVE' ? '#F0FDF4' : '#FEF2F2',
-                      color: admin.status === 'ACTIVE' ? '#16A34A' : '#DC2626',
-                      border: `1px solid ${admin.status === 'ACTIVE' ? '#BBF7D0' : '#FECACA'}`,
-                    }}>{admin.status}</span>
-                  </td>
-                  <td style={{ padding: '14px 16px', fontSize: '12px', color: '#94A3B8' }}>
-                    {new Date(admin.createdAt).toLocaleDateString()}
-                  </td>
-                  <td style={{ padding: '14px 16px' }}>
-                    {admin.role !== 'SUPER_ADMIN' && (
-                      <button
-                        onClick={() => handleToggle(admin.id, admin.status)}
-                        style={{
-                          padding: '6px 14px',
-                          background: admin.status === 'ACTIVE' ? '#FEF2F2' : '#F0FDF4',
-                          color: admin.status === 'ACTIVE' ? '#DC2626' : '#16A34A',
-                          border: `1px solid ${admin.status === 'ACTIVE' ? '#FECACA' : '#BBF7D0'}`,
-                          borderRadius: '8px', fontSize: '12px', fontWeight: 600,
-                          cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-                        }}
-                      >
-                        {admin.status === 'ACTIVE' ? 'Disable' : 'Enable'}
-                      </button>
-                    )}
-                  </td>
+      <Card>
+        {loading ? (
+          <Spinner label="Loading" />
+        ) : rows.length === 0 ? (
+          <EmptyState icon={<ShieldCheck />} title="No admins" />
+        ) : (
+          <TableWrap>
+            <Table>
+              <thead>
+                <tr>
+                  <Th>Admin</Th>
+                  <Th className="hidden md:table-cell">Added</Th>
+                  <Th>Status</Th>
+                  <Th align="right"><span className="sr-only">Actions</span></Th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {rows.map((a) => (
+                  <Tr key={a.id}>
+                    <Td>
+                      <p className="font-medium">{a.name}{a.id === me && <span className="ml-2 text-xs font-normal text-ink-3">(you)</span>}</p>
+                      <p className="text-xs text-ink-3">{a.email}</p>
+                    </Td>
+                    <Td className="hidden text-ink-2 md:table-cell">{date(a.createdAt)}</Td>
+                    <Td><StatusBadge status={a.status} /></Td>
+                    <Td align="right">
+                      {a.id !== me && (
+                        <Button size="sm" variant={a.status === 'ACTIVE' ? 'danger-soft' : 'secondary'} onClick={() => toggle(a)}>
+                          {a.status === 'ACTIVE' ? 'Block' : 'Unblock'}
+                        </Button>
+                      )}
+                    </Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </Table>
+          </TableWrap>
+        )}
+      </Card>
 
-      {showModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
-          <div style={{ background: '#fff', borderRadius: '20px', padding: '32px', width: '100%', maxWidth: '440px', boxShadow: '0 25px 60px rgba(0,0,0,0.15)' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '24px' }}>➕ Add Admin User</h3>
-            <form onSubmit={handleCreate}>
-              {[
-                { label: 'Full Name', key: 'name', type: 'text', placeholder: 'e.g. John Admin' },
-                { label: 'Email', key: 'email', type: 'email', placeholder: 'admin@myerp.com' },
-                { label: 'Password', key: 'password', type: 'password', placeholder: 'Min 8 characters' },
-              ].map((field) => (
-                <div key={field.key} style={{ marginBottom: '14px' }}>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>{field.label}</label>
-                  <input
-                    type={field.type}
-                    value={(form as any)[field.key]}
-                    onChange={(e) => setForm({ ...form, [field.key]: e.target.value })}
-                    placeholder={field.placeholder}
-                    style={inputStyle}
-                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                  />
-                </div>
-              ))}
-              <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-                <button type="button" onClick={() => setShowModal(false)} style={{ flex: 1, padding: '12px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-                <button type="submit" disabled={submitting} style={{ flex: 1, padding: '12px', background: submitting ? '#94A3B8' : '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: submitting ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                  {submitting ? 'Creating...' : 'Create'}
-                </button>
+      <Modal
+        open={showForm}
+        onClose={() => setShowForm(false)}
+        title="Add admin"
+        description="Admins have full control over every company. Add only people you trust."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowForm(false)}>Cancel</Button>
+            <Button onClick={() => save()} loading={saving}>Add admin</Button>
+          </>
+        }
+      >
+        <form onSubmit={save} className="grid grid-cols-1 gap-4">
+          <Field label="Name" required>{(id) => <Input id={id} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} autoFocus />}</Field>
+          <Field label="Email" required>{(id) => <Input id={id} type="email" autoComplete="off" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />}</Field>
+          <Field label="Password" required hint="At least 8 characters">
+            {(id) => (
+              <div className="flex gap-2">
+                <Input id={id} className="num" autoComplete="new-password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+                <Button variant="secondary" onClick={() => setForm({ ...form, password: makePassword() })}>Generate</Button>
               </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            )}
+          </Field>
+          {error && <p className="rounded-[var(--radius-control)] bg-bad-soft px-3 py-2 text-[13px] text-bad">{error}</p>}
+          <button type="submit" className="hidden" />
+        </form>
+      </Modal>
+      {confirmDialog}
     </AdminLayout>
   )
 }

@@ -253,7 +253,7 @@ export class TenantPurchaseService {
   async getSuppliers(slug: string) {
     const client = await this.tenantService.getTenantClient(slug);
     const result = await client.$queryRawUnsafe(
-      `SELECT "id", "name", "phone" FROM "suppliers"
+      `SELECT "id", "name", "phone", "balance" FROM "suppliers"
        WHERE "isDeleted" = false ORDER BY "name" ASC`,
     ) as any[];
     return { success: true, data: result };

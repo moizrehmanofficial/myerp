@@ -1,105 +1,130 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
+import { Package } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import ExportButton from '@/components/common/ExportButton'
+import { Card, Spinner, Stat, Table, TableWrap, Th, Td, Tr, EmptyState, ListToolbar, SearchInput, FilterChips } from '@/components/ui'
+import { StockStatus } from '@/components/products/stock'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { money, number } from '@/lib/format'
+
+type Filter = 'all' | 'low' | 'out'
 
 export default function StockReportPage() {
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState<Filter>('all')
 
   useEffect(() => {
-    const sub = getTenantSlug()
-    fetchReport(sub)
+    tenantApi
+      .get('/erp/reports/stock')
+      .then((r) => setData(r.data.data))
+      .catch((err) => toast.error(apiError(err, 'Could not load the stock report.')))
+      .finally(() => setLoading(false))
   }, [])
 
-  async function fetchReport(sub: string) {
-    try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/reports/stock`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
-      setData(res.data.data)
-    } catch {
-      toast.error('Failed to load report')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const filtered = data?.products?.filter((p: any) =>
-    p.name.toLowerCase().includes(search.toLowerCase()) ||
-    p.sku?.toLowerCase().includes(search.toLowerCase())
-  ) || []
-
-  const s = data?.summary
+  const s = data?.summary || {}
+  const all: any[] = data?.products || []
+  const isLow = (p: any) => Number(p.stock) > 0 && Number(p.minStock) > 0 && Number(p.stock) <= Number(p.minStock)
+  const counts = { all: all.length, low: all.filter(isLow).length, out: all.filter((p) => Number(p.stock) <= 0).length }
+  const rows = useMemo(() => {
+    const q = search.toLowerCase()
+    return all.filter((p) => {
+      if (filter === 'low' && !isLow(p)) return false
+      if (filter === 'out' && Number(p.stock) > 0) return false
+      return !q || String(p.name).toLowerCase().includes(q) || String(p.sku || '').toLowerCase().includes(q)
+    })
+  }, [all, search, filter])
+  const profit = Number(s.totalSaleValue || 0) - Number(s.totalCostValue || 0)
 
   return (
     <TenantLayout
-      title="Stock Report"
-      subtitle="Current inventory valuation"
+      title="Stock report"
+      subtitle="What is in stock now and what it is worth"
       requiredModule="reports"
+      headerRight={
+        <ExportButton
+          data={rows}
+          filename="stock-report"
+          title="Stock report"
+          subtitle={`Stock value at cost ${money(s.totalCostValue)}`}
+          disabled={!data}
+          columns={[
+            { header: 'Product', value: (r: any) => r.name, width: 30 },
+            { header: 'Code', value: (r: any) => r.sku || '', width: 14 },
+            { header: 'Category', value: (r: any) => r.categoryName || '', width: 18 },
+            { header: 'In stock', value: (r: any) => Number(r.stock || 0), width: 10 },
+            { header: 'Cost price', value: (r: any) => Number(r.purchasePrice || 0).toFixed(2), width: 14 },
+            { header: 'Value at cost', value: (r: any) => (Number(r.stock || 0) * Number(r.purchasePrice || 0)).toFixed(2), width: 16 },
+          ]}
+        />
+      }
     >
       {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
+        <Spinner label="Loading stock" />
       ) : (
-        <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', marginBottom: '24px' }}>
-            {[
-              { label: 'Total Products', value: (s?.totalProducts || 0).toLocaleString(), bg: '#EFF6FF', color: '#1D4ED8' },
-              { label: 'Total Units', value: (s?.totalUnits || 0).toLocaleString(), bg: '#F0FDF4', color: '#16A34A' },
-              { label: 'Cost Value', value: `PKR ${(s?.totalCostValue || 0).toLocaleString()}`, bg: '#FFF7ED', color: '#EA580C' },
-              { label: 'Potential Sale Value', value: `PKR ${(s?.totalSaleValue || 0).toLocaleString()}`, bg: '#FAF5FF', color: '#7C3AED' },
-            ].map((c) => (
-              <div key={c.label} style={{ background: '#fff', borderRadius: '14px', padding: '18px 20px', border: '1px solid #E2E8F0' }}>
-                <p style={{ fontSize: '18px', fontWeight: 800, color: c.color, marginBottom: '4px' }}>{c.value}</p>
-                <p style={{ fontSize: '12px', fontWeight: 600, color: '#374151' }}>{c.label}</p>
-              </div>
-            ))}
+        <div className="flex flex-col gap-5">
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Stat label="Products" value={number(s.totalProducts)} sub={`${number(s.totalUnits)} units in total`} />
+            <Stat label="Value at cost" value={money(s.totalCostValue)} sub="What you paid for it" />
+            <Stat label="Value at sale price" value={money(s.totalSaleValue)} sub="If everything sells" />
+            <Stat label="Expected profit" value={money(profit)} sub="Sale value minus cost" />
           </div>
-
-          <input
-            type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search products..."
-            style={{ width: '320px', padding: '10px 16px', border: '1.5px solid #E2E8F0', borderRadius: '10px', fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif', marginBottom: '16px' }}
-          />
-
-          <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                  {['Product', 'SKU', 'Category', 'Stock', 'Cost Price', 'Sale Price', 'Stock Value'].map((h) => (
-                    <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((p: any, i: number) => (
-                  <tr key={p.id} style={{ borderBottom: i < filtered.length - 1 ? '1px solid #F1F5F9' : 'none' }}>
-                    <td style={{ padding: '12px 16px', fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{p.name}</td>
-                    <td style={{ padding: '12px 16px' }}>
-                      <span style={{ fontSize: '11px', color: '#7C3AED', fontFamily: 'monospace', background: '#FAF5FF', padding: '2px 8px', borderRadius: '6px' }}>{p.sku}</span>
-                    </td>
-                    <td style={{ padding: '12px 16px', fontSize: '13px', color: '#64748B' }}>{p.categoryName || '—'}</td>
-                    <td style={{ padding: '12px 16px', fontSize: '14px', fontWeight: 700, color: '#0F172A' }}>{parseFloat(p.stock || 0).toLocaleString()} {p.unit}</td>
-                    <td style={{ padding: '12px 16px', fontSize: '13px', color: '#64748B' }}>PKR {parseFloat(p.purchasePrice || 0).toLocaleString()}</td>
-                    <td style={{ padding: '12px 16px', fontSize: '13px', color: '#16A34A' }}>PKR {parseFloat(p.salePrice || 0).toLocaleString()}</td>
-                    <td style={{ padding: '12px 16px', fontSize: '14px', fontWeight: 700, color: '#374151' }}>
-                      PKR {(parseFloat(p.stock || 0) * parseFloat(p.purchasePrice || 0)).toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+          <Card>
+            <ListToolbar>
+              <SearchInput placeholder="Search by name or code" onSearch={setSearch} />
+              <FilterChips<Filter>
+                options={[
+                  { key: 'all', label: 'All', count: counts.all },
+                  { key: 'low', label: 'Low stock', count: counts.low },
+                  { key: 'out', label: 'Out of stock', count: counts.out },
+                ]}
+                value={filter}
+                onChange={setFilter}
+              />
+            </ListToolbar>
+            {rows.length === 0 ? (
+              <EmptyState icon={<Package />} title="No products match" />
+            ) : (
+              <TableWrap>
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>Product</Th>
+                      <Th align="right">In stock</Th>
+                      <Th className="hidden md:table-cell">Status</Th>
+                      <Th align="right" className="hidden lg:table-cell">Cost price</Th>
+                      <Th align="right" className="hidden lg:table-cell">Sale price</Th>
+                      <Th align="right">Value at cost</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((p) => (
+                      <Tr key={p.id}>
+                        <Td>
+                          <p className="font-medium">{p.name}</p>
+                          <p className="text-xs text-ink-3">{[p.sku, p.categoryName].filter(Boolean).join(', ')}</p>
+                        </Td>
+                        <Td align="right">
+                          <span className={Number(p.stock) <= 0 ? 'font-medium text-bad' : 'font-medium'}>{number(p.stock)}</span>{' '}
+                          <span className="text-xs text-ink-3">{p.unit || 'pcs'}</span>
+                        </Td>
+                        <Td className="hidden md:table-cell"><StockStatus stock={Number(p.stock)} min={Number(p.minStock)} /></Td>
+                        <Td align="right" className="hidden text-ink-2 lg:table-cell">{money(p.purchasePrice)}</Td>
+                        <Td align="right" className="hidden text-ink-2 lg:table-cell">{money(p.salePrice)}</Td>
+                        <Td align="right" className="font-medium">{money(Number(p.stock) * Number(p.purchasePrice))}</Td>
+                      </Tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </TableWrap>
+            )}
+          </Card>
+        </div>
       )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </TenantLayout>
   )
 }

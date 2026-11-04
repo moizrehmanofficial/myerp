@@ -105,7 +105,8 @@ export class TenantProductsService {
       `UPDATE "products"
        SET "name" = $1, "sku" = $2, "barcode" = $3,
            "unit" = $4, "purchasePrice" = $5, "salePrice" = $6,
-           "minStock" = $7, "maxStock" = $8, "updatedAt" = NOW()
+           "minStock" = $7, "maxStock" = $8,
+           "categoryId" = $10::uuid, "brandId" = $11::uuid, "updatedAt" = NOW()
        WHERE "id" = $9::uuid AND "isDeleted" = false
        RETURNING *`,
       body.name,
@@ -117,6 +118,8 @@ export class TenantProductsService {
       body.minStock || 0,
       body.maxStock || 0,
       id,
+      body.categoryId || null,
+      body.brandId || null,
     ) as any[];
 
     if (!result || result.length === 0) {

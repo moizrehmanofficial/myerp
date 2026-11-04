@@ -1,130 +1,117 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { Printer } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import ExportButton from '@/components/common/ExportButton'
+import { Button, Card, CardHeader, Spinner, Stat } from '@/components/ui'
+import { DateRangeBar, StatementRow, StatementSection, presetRange, type Range } from '@/components/reports/ReportBits'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { money, date } from '@/lib/format'
 
-function getDefaultDates() {
-  const to = new Date()
-  const from = new Date()
-  from.setDate(from.getDate() - 30)
-  return {
-    from: from.toISOString().split('T')[0],
-    to: to.toISOString().split('T')[0],
-  }
-}
+const pct = (n: number) => `${(Number(n) || 0).toFixed(1)}%`
 
 export default function ProfitLossPage() {
-  const [subdomain, setSubdomain] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [range, setRange] = useState<Range>(() => presetRange('month'))
   const [data, setData] = useState<any>(null)
-  const defaults = getDefaultDates()
-  const [from, setFrom] = useState(defaults.from)
-  const [to, setTo] = useState(defaults.to)
+  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchReport(sub, defaults.from, defaults.to)
-  }, [])
-
-  async function fetchReport(sub: string, f: string, t: string) {
+  const load = useCallback(async (r: Range) => {
     setLoading(true)
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/reports/profit-loss?from=${f}&to=${t}T23:59:59`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const res = await tenantApi.get(`/erp/reports/profit-loss?from=${r.from}&to=${r.to}`)
       setData(res.data.data)
-    } catch {
-      toast.error('Failed to load report')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load the profit and loss report.'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    load(range)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const d = data || {}
+  const net = Number(d.netProfit || 0)
+  const period = `${date(range.from)} to ${date(range.to)}`
+  const exportRows = [
+    ...(d.incomeAccounts || []).map((a: any) => ({ section: 'Income', ...a })),
+    { section: 'Cost of goods sold', code: '5000', name: 'Cost of goods sold', amount: d.totalCOGS || 0 },
+    { section: 'Gross profit', code: '', name: 'Gross profit', amount: d.grossProfit || 0 },
+    ...(d.expenseAccounts || []).map((a: any) => ({ section: 'Expenses', ...a })),
+    { section: 'Net profit', code: '', name: 'Net profit', amount: net },
+  ]
 
   return (
     <TenantLayout
-      title="Profit & Loss"
-      subtitle="Revenue, cost, and gross profit overview"
+      title="Profit & loss"
+      subtitle="What you earned, what it cost, and what is left"
       requiredModule="reports"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <span style={{ color: '#94A3B8', fontSize: '13px' }}>to</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <button onClick={() => fetchReport(subdomain, from, to)} style={{ padding: '8px 16px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Apply</button>
-        </div>
+        <>
+          <Button variant="secondary" icon={<Printer className="size-4" />} onClick={() => window.print()}>Print</Button>
+          <ExportButton
+            data={exportRows}
+            filename={`profit-loss-${range.from}-${range.to}`}
+            title="Profit & loss"
+            subtitle={period}
+            disabled={!data}
+            columns={[
+              { header: 'Section', value: (r: any) => r.section, width: 20 },
+              { header: 'Account', value: (r: any) => `${r.code ? r.code + ' ' : ''}${r.name}`, width: 32 },
+              { header: 'Amount (PKR)', value: (r: any) => Number(r.amount || 0).toFixed(2), width: 18 },
+            ]}
+          />
+        </>
       }
     >
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <div style={{ maxWidth: '600px' }}>
-          <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
+      <div className="flex flex-col gap-5">
+        <DateRangeBar initial={range} onApply={(r) => { setRange(r); load(r) }} />
 
-            <div style={{ padding: '20px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>Total Revenue</span>
-              <span style={{ fontSize: '18px', fontWeight: 800, color: '#16A34A' }}>PKR {(data?.totalRevenue || 0).toLocaleString()}</span>
+        {loading && !data ? (
+          <Spinner label="Working out profit" />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Stat label="Sales" value={money(d.totalRevenue)} sub="Before sales tax" />
+              <Stat label="Gross profit" value={money(d.grossProfit)} sub={`${pct(d.grossMargin)} of sales`} />
+              <Stat label="Running costs" value={money(d.totalExpenses)} sub="Rent, salaries and other expenses" />
+              <Stat
+                label={net >= 0 ? 'Net profit' : 'Net loss'}
+                value={<span className={net >= 0 ? 'text-good' : 'text-bad'}>{money(Math.abs(net))}</span>}
+                sub={`${pct(d.netMargin)} of sales`}
+              />
             </div>
 
-            <div style={{ padding: '20px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>Cost of Goods Sold (COGS)</span>
-              <span style={{ fontSize: '18px', fontWeight: 800, color: '#DC2626' }}>− PKR {(data?.totalCOGS || 0).toLocaleString()}</span>
-            </div>
+            <Card className="mx-auto w-full max-w-3xl">
+              <CardHeader title="Profit and loss statement" description={period} />
+              <StatementSection title="Income">
+                {(d.incomeAccounts || []).length === 0 && <p className="px-5 py-2 text-sm text-ink-3">No sales in these dates.</p>}
+                {(d.incomeAccounts || []).map((a: any) => <StatementRow key={a.id} label={a.name} sub={a.code} value={a.amount} indent />)}
+                <StatementRow label="Total income" value={d.totalRevenue || 0} strong />
+              </StatementSection>
+              <StatementSection title="Cost of goods sold">
+                <StatementRow label="Purchase cost of the items sold" value={d.totalCOGS || 0} indent />
+                <StatementRow label="Gross profit" value={d.grossProfit || 0} total />
+              </StatementSection>
+              <StatementSection title="Expenses">
+                {(d.expenseAccounts || []).length === 0 && <p className="px-5 py-2 text-sm text-ink-3">No expenses posted in these dates.</p>}
+                {(d.expenseAccounts || []).map((a: any) => <StatementRow key={a.id} label={a.name} sub={a.code} value={a.amount} indent />)}
+                <StatementRow label="Total expenses" value={d.totalExpenses || 0} strong />
+              </StatementSection>
+              <StatementRow label={net >= 0 ? 'Net profit' : 'Net loss'} value={net} total tone={net >= 0 ? 'good' : 'bad'} />
+            </Card>
 
-            <div style={{ padding: '20px', background: '#1E3A5F', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>Gross Profit</span>
-                <div style={{ fontSize: '12px', color: '#93C5FD', marginTop: '2px' }}>Margin: {(data?.grossMargin || 0).toFixed(1)}%</div>
-              </div>
-              <span style={{ fontSize: '22px', fontWeight: 900, color: '#fff' }}>
-                PKR {(data?.grossProfit || 0).toLocaleString()}
-              </span>
-            </div>
-
-            {/* Operating expenses (salaries, rent, utilities, ...) */}
-            {(data?.expenseAccounts || []).map((a: any) => (
-              <div key={a.id} style={{ padding: '12px 20px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '13px', color: '#374151' }}>{a.name} <span style={{ color: '#94A3B8', fontFamily: 'monospace', fontSize: '11px' }}>{a.code}</span></span>
-                <span style={{ fontSize: '14px', fontWeight: 700, color: '#DC2626' }}>− PKR {Number(a.amount || 0).toLocaleString()}</span>
-              </div>
-            ))}
-
-            <div style={{ padding: '20px', borderBottom: '1px solid #F1F5F9', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span style={{ fontSize: '14px', fontWeight: 600, color: '#374151' }}>Total Operating Expenses</span>
-              <span style={{ fontSize: '18px', fontWeight: 800, color: '#DC2626' }}>− PKR {(data?.totalExpenses || 0).toLocaleString()}</span>
-            </div>
-
-            <div style={{ padding: '20px', background: (data?.netProfit || 0) >= 0 ? '#16A34A' : '#DC2626', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <span style={{ fontSize: '15px', fontWeight: 700, color: '#fff' }}>{(data?.netProfit || 0) >= 0 ? 'Net Profit' : 'Net Loss'}</span>
-                <div style={{ fontSize: '12px', color: '#DCFCE7', marginTop: '2px' }}>Margin: {(data?.netMargin || 0).toFixed(1)}%</div>
-              </div>
-              <span style={{ fontSize: '22px', fontWeight: 900, color: '#fff' }}>
-                PKR {(data?.netProfit || 0).toLocaleString()}
-              </span>
-            </div>
-
-            <div style={{ padding: '20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#F8FAFC' }}>
-              <span style={{ fontSize: '13px', color: '#64748B' }}>Total Stock Purchases (period)</span>
-              <span style={{ fontSize: '14px', fontWeight: 700, color: '#EA580C' }}>PKR {(data?.totalPurchases || 0).toLocaleString()}</span>
-            </div>
-          </div>
-
-          <p style={{ fontSize: '12px', color: '#94A3B8', marginTop: '16px', lineHeight: 1.6 }}>
-            💡 Figures come from the accounts (journal entries): sales invoices, cost of goods sold,
-            and every expense posted (salaries, rent, utilities, manual journals). Revenue excludes sales tax.
-            Stock Purchases is shown for information only — stock becomes an expense (COGS) when it is sold.
-          </p>
-        </div>
-      )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            <p className="mx-auto max-w-3xl text-[13px] leading-relaxed text-ink-3">
+              Figures come from the books: invoices, cost of goods sold, and every expense posted through payments or journal entries.
+              Stock bought in these dates ({money(d.totalPurchases)}) is not an expense until it is sold, so it is not subtracted here.
+            </p>
+          </>
+        )}
+      </div>
     </TenantLayout>
   )
 }

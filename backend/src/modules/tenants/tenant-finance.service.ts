@@ -87,7 +87,7 @@ export class TenantFinanceService {
     }
 
     const entries = await client.$queryRawUnsafe(
-      `SELECT ji.*, je."entryNumber", je."description", je."createdAt", je."reference"
+      `SELECT ji.*, je."entryNumber", je."description", je."createdAt", je."reference", je."sourceType" AS "sourceType"
        FROM "journal_items" ji
        JOIN "journal_entries" je ON ji."journalEntryId" = je."id"
        WHERE ${whereClause}
@@ -95,8 +95,23 @@ export class TenantFinanceService {
       ...params,
     ) as any[];
 
+    // Opening balance = everything before the "from" date, so the running
+    // balance on screen matches the account's real balance
+    const sign = ['ASSET', 'EXPENSE'].includes(account.type) ? 1 : -1;
+    let openingBalance = 0;
+    if (from) {
+      const before = (await client.$queryRawUnsafe(
+        `SELECT COALESCE(SUM(ji."debit"), 0) AS dr, COALESCE(SUM(ji."credit"), 0) AS cr
+         FROM "journal_items" ji
+         JOIN "journal_entries" je ON ji."journalEntryId" = je."id"
+         WHERE ji."accountId" = $1::uuid AND je."createdAt" < $2::timestamp`,
+        accountId, from,
+      )) as any[];
+      openingBalance = sign * (Number(before[0]?.dr || 0) - Number(before[0]?.cr || 0));
+    }
+
     // Calculate running balance
-    let runningBalance = 0;
+    let runningBalance = openingBalance;
     const ledgerEntries = entries.map((entry: any) => {
       const debit = Number(entry.debit || 0);
       const credit = Number(entry.credit || 0);
@@ -110,7 +125,7 @@ export class TenantFinanceService {
 
     return {
       success: true,
-      data: { account, entries: ledgerEntries },
+      data: { account, openingBalance, closingBalance: runningBalance, entries: ledgerEntries },
     };
   }
 

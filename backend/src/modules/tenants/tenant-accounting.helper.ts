@@ -11,6 +11,7 @@ export const ACC = {
   TAX: '2200', // Sales Tax Payable
   SALES: '4000',
   COGS: '5000',
+  SALARIES: '5100',
 } as const;
 
 // Liabilities, equity and income grow on the CREDIT side
@@ -214,6 +215,48 @@ export async function postPurchaseReceived(db: Db, po: any, date?: any) {
     lines: [
       { code: ACC.INVENTORY, debit: total, description: 'Inventory in' },
       { code: ACC.AP, credit: total, description: 'Supplier payable' },
+    ],
+  });
+}
+
+// Customer returned goods: sale reversed (they owe less) + stock value back
+export async function postSaleReturn(db: Db, ret: any, items: { productId: string; quantity: any }[]) {
+  const total = round2(Number(ret.totalAmount) || 0);
+  let cost = 0;
+  const ids = [...new Set(items.map((i) => i.productId))];
+  if (ids.length) {
+    const products = (await db.$queryRawUnsafe(
+      `SELECT "id", "purchasePrice" FROM "products" WHERE "id" = ANY($1::uuid[])`,
+      ids,
+    )) as any[];
+    const price = new Map(products.map((p) => [p.id, Number(p.purchasePrice) || 0]));
+    cost = round2(items.reduce((s, i) => s + (Number(i.quantity) || 0) * (price.get(i.productId) || 0), 0));
+  }
+  return postJournal(db, {
+    description: `Sale return ${ret.returnNumber}`,
+    reference: ret.returnNumber,
+    sourceType: 'sale_return',
+    sourceId: ret.id,
+    lines: [
+      { code: ACC.SALES, debit: total, description: 'Sales returned' },
+      { code: ACC.AR, credit: total, description: 'Customer credited' },
+      { code: ACC.INVENTORY, debit: cost, description: 'Stock back' },
+      { code: ACC.COGS, credit: cost, description: 'Cost reversed' },
+    ],
+  });
+}
+
+// Goods sent back to the supplier: we owe less, stock value goes out
+export async function postPurchaseReturn(db: Db, ret: any) {
+  const total = round2(Number(ret.totalAmount) || 0);
+  return postJournal(db, {
+    description: `Purchase return ${ret.returnNumber}`,
+    reference: ret.returnNumber,
+    sourceType: 'purchase_return',
+    sourceId: ret.id,
+    lines: [
+      { code: ACC.AP, debit: total, description: 'Supplier debited' },
+      { code: ACC.INVENTORY, credit: total, description: 'Stock returned' },
     ],
   });
 }

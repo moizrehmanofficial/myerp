@@ -31,7 +31,7 @@ export class TenantAuthService {
 
     // Find user in tenant DB
     const users = await client.$queryRawUnsafe(
-      `SELECT * FROM "users" WHERE "email" = $1 AND "isDeleted" = false LIMIT 1`,
+      `SELECT * FROM "users" WHERE LOWER("email") = LOWER(TRIM($1)) AND "isDeleted" = false LIMIT 1`,
       email,
     ) as any[];
 

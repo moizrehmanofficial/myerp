@@ -1,326 +1,241 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import axios from 'axios'
 import toast from 'react-hot-toast'
+import { Factory, Plus, Trash2 } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import Pagination from '@/components/common/Pagination'
+import {
+  Badge, Button, Card, Field, Input, Modal, Select, Spinner, Table, TableWrap, Textarea, Th, Td, Tr,
+  EmptyState, IconAction, ListToolbar, FilterChips, useConfirm,
+} from '@/components/ui'
+import { usePermission } from '@/hooks/usePermission'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { number, date } from '@/lib/format'
+import { useCompanyHref } from '@/lib/useCompanyHref'
+import { MFG_TONE, mfgStatusLabel } from '@/components/manufacturing/mfg'
+import { cn } from '@/utils/utils'
+
+type Filter = 'ALL' | 'PLANNED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED'
+type Line = { productId: string; requiredQuantity: string }
 
 export default function ManufacturingPage() {
   const router = useRouter()
+  const href = useCompanyHref()
+  const { canWrite, canDelete } = usePermission()
   const [orders, setOrders] = useState<any[]>([])
+  const [meta, setMeta] = useState<any>(null)
   const [products, setProducts] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
-  const [showModal, setShowModal] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [updating, setUpdating] = useState<string | null>(null)
+  const [page, setPage] = useState(1)
+  const [limit, setLimit] = useState(25)
+  const [filter, setFilter] = useState<Filter>('ALL')
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState({ productId: '', quantity: '1', startDate: '', endDate: '', notes: '' })
+  const [lines, setLines] = useState<Line[]>([{ productId: '', requiredQuantity: '' }])
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [confirm, confirmDialog] = useConfirm()
 
-  const [form, setForm] = useState({
-    productId: '',
-    quantity: '1',
-    startDate: '',
-    endDate: '',
-    notes: '',
-  })
-
-  const [materials, setMaterials] = useState([
-    { productId: '', requiredQuantity: '1' }
-  ])
-
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchData(sub)
-  }, [])
-
-  function getApi(sub: string) {
-    return {
-      get: (url: string) => axios.get(`${process.env.NEXT_PUBLIC_API_URL}${url}`, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      post: (url: string, data: any) => axios.post(`${process.env.NEXT_PUBLIC_API_URL}${url}`, data, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      patch: (url: string, data: any) => axios.patch(`${process.env.NEXT_PUBLIC_API_URL}${url}`, data, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      delete: (url: string) => axios.delete(`${process.env.NEXT_PUBLIC_API_URL}${url}`, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-    }
-  }
-
-  async function fetchData(sub: string) {
+  const load = useCallback(async (p: number, l: number) => {
     setLoading(true)
     try {
-      const [oRes, pRes] = await Promise.all([
-        getApi(sub).get('/erp/manufacturing/orders'),
-        getApi(sub).get('/erp/manufacturing/products'),
-      ])
-      setOrders(oRes.data.data)
-      setProducts(pRes.data.data)
-    } catch {
-      toast.error('Failed to load manufacturing orders')
+      const res = await tenantApi.get(`/erp/manufacturing/orders?page=${p}&limit=${l}`)
+      setOrders(res.data.data || [])
+      setMeta(res.data.meta)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load production orders.'))
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    load(page, limit)
+  }, [load, page, limit])
+
+  function openForm() {
+    setForm({ productId: '', quantity: '1', startDate: '', endDate: '', notes: '' })
+    setLines([{ productId: '', requiredQuantity: '' }])
+    setError('')
+    setShowForm(true)
+    tenantApi.get('/erp/manufacturing/products').then((r) => setProducts(r.data.data || [])).catch(() => {})
   }
 
-  function addMaterial() {
-    setMaterials([...materials, { productId: '', requiredQuantity: '1' }])
-  }
+  const byId = (id: string) => products.find((p) => p.id === id)
 
-  function removeMaterial(index: number) {
-    if (materials.length === 1) return
-    setMaterials(materials.filter((_, i) => i !== index))
-  }
-
-  function updateMaterial(index: number, field: string, value: string) {
-    const updated = [...materials]
-    updated[index] = { ...updated[index], [field]: value }
-    setMaterials(updated)
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!form.productId) { toast.error('Select a finished product'); return }
-    if (!form.quantity || parseFloat(form.quantity) <= 0) { toast.error('Enter valid quantity'); return }
-    setSubmitting(true)
+  async function save(e?: React.FormEvent) {
+    e?.preventDefault()
+    const used = lines.filter((l) => l.productId)
+    if (!form.productId) return setError('Choose the product you will make.')
+    if (!(Number(form.quantity) > 0)) return setError('Quantity to make must be more than 0.')
+    if (!used.length) return setError('Add at least one raw material.')
+    if (used.some((l) => !(Number(l.requiredQuantity) > 0))) return setError('Every raw material needs a quantity.')
+    if (used.some((l) => l.productId === form.productId)) return setError('The product you are making cannot also be a raw material.')
+    setError('')
+    setSaving(true)
     try {
-      await getApi(subdomain).post('/erp/manufacturing/orders', {
-        ...form,
-        materials: materials.filter((m) => m.productId),
-      })
-      toast.success('Manufacturing order created!')
-      setShowModal(false)
-      setForm({ productId: '', quantity: '1', startDate: '', endDate: '', notes: '' })
-      setMaterials([{ productId: '', requiredQuantity: '1' }])
-      fetchData(subdomain)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to create order')
+      const res = await tenantApi.post('/erp/manufacturing/orders', { ...form, materials: used })
+      toast.success(`${res.data.data?.orderNumber || 'Order'} created`)
+      setShowForm(false)
+      if (res.data.data?.id) router.push(href(`/erp/manufacturing/${res.data.data.id}`))
+      else load(1, limit)
+    } catch (err) {
+      setError(apiError(err, 'Could not create the order.'))
     } finally {
-      setSubmitting(false)
+      setSaving(false)
     }
   }
 
-  async function handleStatusUpdate(id: string, status: string) {
-    const confirmMsg = status === 'COMPLETED'
-      ? 'Mark as COMPLETED? This will deduct raw materials and add finished product to stock.'
-      : `Mark as ${status}?`
-    if (!confirm(confirmMsg)) return
-    setUpdating(id)
+  async function remove(o: any) {
+    const ok = await confirm({
+      title: `Delete ${o.orderNumber}?`,
+      message: o.status === 'COMPLETED' ? 'The finished goods are taken out of stock and the raw materials put back.' : undefined,
+      confirmLabel: 'Delete order',
+      danger: true,
+    })
+    if (!ok) return
     try {
-      await getApi(subdomain).patch(`/erp/manufacturing/orders/${id}/status`, { status })
-      toast.success(status === 'COMPLETED' ? 'Order completed — stock updated!' : 'Status updated')
-      fetchData(subdomain)
-    } catch {
-      toast.error('Failed to update status')
-    } finally {
-      setUpdating(null)
+      await tenantApi.delete(`/erp/manufacturing/orders/${o.id}`)
+      toast.success(`${o.orderNumber} deleted`)
+      load(page, limit)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not delete the order.'))
     }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm('Delete this order?')) return
-    try {
-      await getApi(subdomain).delete(`/erp/manufacturing/orders/${id}`)
-      toast.success('Order deleted')
-      fetchData(subdomain)
-    } catch {
-      toast.error('Failed to delete')
-    }
-  }
-
-  function getStatusStyle(status: string) {
-    switch (status) {
-      case 'COMPLETED':   return { bg: '#F0FDF4', color: '#16A34A', border: '#BBF7D0' }
-      case 'IN_PROGRESS': return { bg: '#EFF6FF', color: '#1D4ED8', border: '#BFDBFE' }
-      case 'PLANNED':     return { bg: '#FFF7ED', color: '#EA580C', border: '#FED7AA' }
-      case 'CANCELLED':   return { bg: '#FEF2F2', color: '#DC2626', border: '#FECACA' }
-      default:            return { bg: '#F1F5F9', color: '#64748B', border: '#E2E8F0' }
-    }
-  }
-
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '9px 10px',
-    border: '1.5px solid #E2E8F0', borderRadius: '8px',
-    fontSize: '13px', outline: 'none',
-    fontFamily: 'Inter, sans-serif', background: '#fff',
-    boxSizing: 'border-box',
-  }
+  const rows = filter === 'ALL' ? orders : orders.filter((o) => o.status === filter)
+  const count = (k: Filter) => (k === 'ALL' ? orders.length : orders.filter((o) => o.status === k).length)
 
   return (
     <TenantLayout
       title="Manufacturing"
-      subtitle="Manage production orders"
+      subtitle="Turn raw materials into finished products"
       requiredModule="manufacturing"
-      headerRight={
-        <button
-          onClick={() => setShowModal(true)}
-          style={{ padding: '10px 18px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}
-        >➕ New Production Order</button>
-      }
+      headerRight={canWrite('manufacturing') && <Button icon={<Plus className="size-4" />} onClick={openForm}>New production order</Button>}
     >
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : orders.length === 0 ? (
-        <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '80px', textAlign: 'center' }}>
-          <div style={{ fontSize: '48px', marginBottom: '12px' }}>🏭</div>
-          <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>No production orders yet</h3>
-          <p style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '20px' }}>Create a production order to start manufacturing</p>
-          <button onClick={() => setShowModal(true)} style={{ padding: '10px 24px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>➕ Create First Order</button>
-        </div>
-      ) : (
-        <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                {['Order #', 'Finished Product', 'Quantity', 'Start Date', 'End Date', 'Status', 'Actions'].map((h) => (
-                  <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {orders.map((order: any, i: number) => {
-                const ss = getStatusStyle(order.status)
-                return (
-                  <tr key={order.id} style={{ borderBottom: i < orders.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                    onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                  >
-                    <td style={{ padding: '14px 16px' }}>
-                      <span style={{ fontFamily: 'monospace', fontSize: '13px', fontWeight: 700, color: '#1E3A5F', background: '#EFF6FF', padding: '3px 8px', borderRadius: '6px' }}>{order.orderNumber}</span>
-                    </td>
-                    <td style={{ padding: '14px 16px' }}>
-                      <div style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{order.productName}</div>
-                      <div style={{ fontSize: '11px', color: '#94A3B8' }}>{order.productSku}</div>
-                    </td>
-                    <td style={{ padding: '14px 16px', fontSize: '14px', fontWeight: 700, color: '#0F172A' }}>
-                      {parseFloat(order.quantity).toLocaleString()} {order.productUnit}
-                    </td>
-                    <td style={{ padding: '14px 16px', fontSize: '12px', color: '#64748B' }}>
-                      {order.startDate ? new Date(order.startDate).toLocaleDateString() : '—'}
-                    </td>
-                    <td style={{ padding: '14px 16px', fontSize: '12px', color: '#64748B' }}>
-                      {order.endDate ? new Date(order.endDate).toLocaleDateString() : '—'}
-                    </td>
-                    <td style={{ padding: '14px 16px' }}>
-                      <span style={{ padding: '4px 10px', borderRadius: '99px', fontSize: '11px', fontWeight: 600, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}` }}>
-                        {order.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: '14px 16px' }}>
-                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-                        <button
-                          onClick={() => router.push(`/erp/manufacturing/${order.id}`)}
-                          style={{ padding: '6px 10px', background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}
-                        >View</button>
-                        {order.status === 'PLANNED' && (
-                          <button
-                            onClick={() => handleStatusUpdate(order.id, 'IN_PROGRESS')}
-                            disabled={updating === order.id}
-                            style={{ padding: '6px 10px', background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}
-                          >▶ Start</button>
-                        )}
-                        {order.status === 'IN_PROGRESS' && (
-                          <button
-                            onClick={() => handleStatusUpdate(order.id, 'COMPLETED')}
-                            disabled={updating === order.id}
-                            style={{ padding: '6px 10px', background: '#F0FDF4', color: '#16A34A', border: '1px solid #BBF7D0', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}
-                          >✓ Complete</button>
-                        )}
-                        {order.status === 'PLANNED' && (
-                          <button
-                            onClick={() => handleDelete(order.id)}
-                            style={{ padding: '6px 10px', background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}
-                          >Delete</button>
-                        )}
-                      </div>
-                    </td>
+      <Card>
+        <ListToolbar>
+          <FilterChips<Filter>
+            options={(['ALL', 'PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'] as Filter[]).map((k) => ({ key: k, label: k === 'ALL' ? 'All' : mfgStatusLabel(k), count: count(k) }))}
+            value={filter}
+            onChange={setFilter}
+          />
+        </ListToolbar>
+        {loading ? (
+          <Spinner label="Loading production orders" />
+        ) : rows.length === 0 ? (
+          <EmptyState
+            icon={<Factory />}
+            title={orders.length ? 'No orders with this status' : 'No production orders yet'}
+            description={orders.length ? undefined : 'Plan what to make and which materials it uses. Stock moves when you mark it completed.'}
+            action={!orders.length && canWrite('manufacturing') ? <Button icon={<Plus className="size-4" />} onClick={openForm}>New production order</Button> : undefined}
+          />
+        ) : (
+          <>
+            <TableWrap>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Order</Th>
+                    <Th className="hidden sm:table-cell">Product</Th>
+                    <Th align="right">Quantity</Th>
+                    <Th className="hidden md:table-cell">Dates</Th>
+                    <Th>Status</Th>
+                    <Th align="right"><span className="sr-only">Actions</span></Th>
                   </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Create Order Modal */}
-      {showModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: '20px' }}>
-          <div style={{ background: '#fff', borderRadius: '20px', padding: '32px', width: '100%', maxWidth: '700px', maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 25px 60px rgba(0,0,0,0.2)' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '24px' }}>🏭 New Production Order</h3>
-            <form onSubmit={handleSubmit}>
-
-              {/* Finished Product */}
-              <div style={{ background: '#F8FAFC', borderRadius: '12px', padding: '16px', marginBottom: '20px' }}>
-                <h4 style={{ fontSize: '13px', fontWeight: 700, color: '#0F172A', marginBottom: '12px' }}>✅ Finished Product (Output)</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '12px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Product to Manufacture *</label>
-                    <select value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })} style={inputStyle}>
-                      <option value="">Select Product...</option>
-                      {products.map((p: any) => <option key={p.id} value={p.id}>{p.name} ({p.sku}) — Stock: {parseFloat(p.stock || 0)}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Quantity to Produce *</label>
-                    <input type="number" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} min="1" style={inputStyle} />
-                  </div>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginTop: '12px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Start Date</label>
-                    <input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>End Date</label>
-                    <input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} style={inputStyle} />
-                  </div>
-                </div>
-              </div>
-
-              {/* Raw Materials */}
-              <div style={{ background: '#FFF7ED', borderRadius: '12px', padding: '16px', marginBottom: '20px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-                  <h4 style={{ fontSize: '13px', fontWeight: 700, color: '#EA580C' }}>📦 Raw Materials (Input)</h4>
-                  <button type="button" onClick={addMaterial} style={{ padding: '5px 12px', background: '#FFF7ED', color: '#EA580C', border: '1px solid #FED7AA', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>+ Add Material</button>
-                </div>
-
-                <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr 36px', gap: '8px', padding: '6px 4px', background: 'rgba(0,0,0,0.04)', borderRadius: '6px', marginBottom: '8px' }}>
-                  {['Raw Material Product', 'Required Qty', ''].map((h) => (
-                    <div key={h} style={{ fontSize: '11px', fontWeight: 700, color: '#92400E', textTransform: 'uppercase', paddingLeft: '4px' }}>{h}</div>
+                </thead>
+                <tbody>
+                  {rows.map((o) => (
+                    <Tr key={o.id} onClick={() => router.push(href(`/erp/manufacturing/${o.id}`))}>
+                      <Td>
+                        <p className="font-medium">{o.orderNumber}</p>
+                        <p className="text-xs text-ink-3"><span className="sm:hidden">{o.productName}, </span>{date(o.createdAt)}</p>
+                      </Td>
+                      <Td className="hidden sm:table-cell">
+                        <p>{o.productName}</p>
+                        {o.productSku && <p className="text-xs text-ink-3">{o.productSku}</p>}
+                      </Td>
+                      <Td align="right">{number(o.quantity)} <span className="text-xs text-ink-3">{o.productUnit || 'pcs'}</span></Td>
+                      <Td className="hidden text-ink-2 md:table-cell">
+                        {o.startDate || o.endDate ? `${o.startDate ? date(o.startDate) : '…'} to ${o.endDate ? date(o.endDate) : '…'}` : '—'}
+                      </Td>
+                      <Td><Badge tone={MFG_TONE[o.status]}>{mfgStatusLabel(o.status)}</Badge></Td>
+                      <Td align="right">
+                        {canDelete('manufacturing') && <IconAction label={`Delete ${o.orderNumber}`} onClick={() => remove(o)} danger><Trash2 /></IconAction>}
+                      </Td>
+                    </Tr>
                   ))}
-                </div>
+                </tbody>
+              </Table>
+            </TableWrap>
+            {meta && <Pagination page={page} totalPages={meta.totalPages || 1} total={meta.total || 0} limit={limit} onPageChange={setPage} onLimitChange={(l) => { setPage(1); setLimit(l) }} />}
+          </>
+        )}
+      </Card>
 
-                {materials.map((mat, index) => (
-                  <div key={index} style={{ display: 'grid', gridTemplateColumns: '3fr 1fr 36px', gap: '8px', marginBottom: '8px' }}>
-                    <select value={mat.productId} onChange={(e) => updateMaterial(index, 'productId', e.target.value)} style={inputStyle}>
-                      <option value="">Select Product...</option>
-                      {products.map((p: any) => (
-                        <option key={p.id} value={p.id}>{p.name} ({p.sku}) — Available: {parseFloat(p.stock || 0)}</option>
-                      ))}
-                    </select>
-                    <input type="number" value={mat.requiredQuantity} min="0.01" onChange={(e) => updateMaterial(index, 'requiredQuantity', e.target.value)} style={inputStyle} />
-                    <button type="button" onClick={() => removeMaterial(index)} disabled={materials.length === 1} style={{ width: '36px', height: '36px', background: materials.length === 1 ? '#F1F5F9' : '#FEF2F2', color: materials.length === 1 ? '#CBD5E1' : '#DC2626', border: 'none', borderRadius: '8px', cursor: materials.length === 1 ? 'not-allowed' : 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>×</button>
-                  </div>
-                ))}
-              </div>
-
-              {/* Notes */}
-              <div style={{ marginBottom: '20px' }}>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Notes</label>
-                <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Optional production notes..." rows={2} style={{ ...inputStyle, resize: 'vertical', lineHeight: '1.5' }} />
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px' }}>
-                <button type="button" onClick={() => setShowModal(false)} style={{ flex: 1, padding: '12px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-                <button type="submit" disabled={submitting} style={{ flex: 2, padding: '12px', background: submitting ? '#94A3B8' : '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: submitting ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                  {submitting ? 'Creating...' : '🏭 Create Production Order'}
-                </button>
-              </div>
-            </form>
+      <Modal
+        open={showForm}
+        onClose={() => setShowForm(false)}
+        size="lg"
+        title="New production order"
+        description="Nothing leaves stock until you mark the order completed."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowForm(false)}>Cancel</Button>
+            <Button onClick={() => save()} loading={saving}>Create order</Button>
+          </>
+        }
+      >
+        <form onSubmit={save} className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <Field label="Product to make" required className="sm:col-span-2">
+              {(id) => (
+                <Select id={id} value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })}>
+                  <option value="">Choose product</option>
+                  {products.map((p) => <option key={p.id} value={p.id}>{p.name}{p.sku ? ` (${p.sku})` : ''}</option>)}
+                </Select>
+              )}
+            </Field>
+            <Field label="Quantity" required hint={byId(form.productId)?.unit}>
+              {(id) => <Input id={id} type="number" min="0" step="any" className="num" value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value })} />}
+            </Field>
+            <Field label="Start">{(id) => <Input id={id} type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} />}</Field>
+            <Field label="Finish by">{(id) => <Input id={id} type="date" min={form.startDate || undefined} value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} />}</Field>
           </div>
-        </div>
-      )}
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          <div className="rounded-[var(--radius-control)] border border-line">
+            <div className="flex items-center justify-between border-b border-line bg-subtle px-3 py-2">
+              <p className="text-[13px] font-semibold text-ink-2">Raw materials for the whole order</p>
+              <Button size="sm" variant="ghost" icon={<Plus className="size-3.5" />} onClick={() => setLines([...lines, { productId: '', requiredQuantity: '' }])}>Add material</Button>
+            </div>
+            {lines.map((l, i) => {
+              const p = byId(l.productId)
+              const short = p && Number(l.requiredQuantity) > Number(p.stock)
+              return (
+                <div key={i} className="grid grid-cols-[minmax(0,1fr)_110px_32px] items-start gap-2 border-b border-line px-3 py-2.5 last:border-b-0">
+                  <div>
+                    <Select aria-label={`Material ${i + 1}`} value={l.productId} onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, productId: e.target.value } : x)))}>
+                      <option value="">Choose material</option>
+                      {products.filter((x) => x.id !== form.productId).map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+                    </Select>
+                    {p && <p className={cn('mt-1 text-xs', short ? 'text-bad' : 'text-ink-3')}>{number(p.stock)} {p.unit || 'pcs'} in stock{short ? ', not enough yet' : ''}</p>}
+                  </div>
+                  <Input aria-label={`Quantity of material ${i + 1}`} type="number" min="0" step="any" className="num" placeholder="Qty" value={l.requiredQuantity}
+                    onChange={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, requiredQuantity: e.target.value } : x)))} />
+                  <IconAction label={`Remove material ${i + 1}`} onClick={() => lines.length > 1 && setLines(lines.filter((_, j) => j !== i))} danger><Trash2 /></IconAction>
+                </div>
+              )
+            })}
+          </div>
+
+          <Field label="Notes">{(id) => <Textarea id={id} rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />}</Field>
+          {error && <p className="rounded-[var(--radius-control)] bg-bad-soft px-3 py-2 text-[13px] text-bad">{error}</p>}
+          <button type="submit" className="hidden" />
+        </form>
+      </Modal>
+      {confirmDialog}
     </TenantLayout>
   )
 }

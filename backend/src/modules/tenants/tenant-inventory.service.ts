@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
 
 @Injectable()
@@ -87,7 +87,7 @@ export class TenantInventoryService {
         totalPages: Math.ceil(total / limit),
       },
     };
-  } 
+  }
 
   async adjustStock(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
@@ -98,19 +98,27 @@ export class TenantInventoryService {
     ) as any[];
 
     if (!products || products.length === 0) {
-      throw new Error('Product not found');
+      throw new NotFoundException('Product not found');
     }
 
     const product = products[0];
     const adjustment = parseFloat(body.quantity);
     const type = body.type; // 'ADD' or 'SUBTRACT'
 
+    if (!(adjustment > 0)) throw new BadRequestException('Quantity must be greater than 0');
+    if (type !== 'ADD' && type !== 'SUBTRACT') throw new BadRequestException('Choose add or remove');
+
     let newStock: number;
     if (type === 'ADD') {
       newStock = parseFloat(product.stock) + adjustment;
     } else {
       newStock = parseFloat(product.stock) - adjustment;
-      if (newStock < 0) newStock = 0;
+      // Never silently cap: the movement record must match the real change
+      if (newStock < 0) {
+        throw new BadRequestException(
+          `Cannot remove ${adjustment}. Only ${Number(product.stock)} ${product.unit || ''} in stock.`.trim(),
+        );
+      }
     }
 
     await client.$queryRawUnsafe(

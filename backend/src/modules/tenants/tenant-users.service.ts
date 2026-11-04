@@ -140,8 +140,14 @@ export class TenantUsersService {
   async createUser(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
 
+    body.name = String(body.name || '').trim();
+    body.email = String(body.email || '').trim().toLowerCase();
+    if (!body.name) throw new BadRequestException('Enter the person’s name');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) throw new BadRequestException('Enter a valid email address');
+    if (String(body.password || '').length < 8) throw new BadRequestException('Password must be at least 8 characters');
+
     const existing = await client.$queryRawUnsafe(
-      `SELECT id FROM "users" WHERE "email" = $1 AND "isDeleted" = false LIMIT 1`,
+      `SELECT id FROM "users" WHERE LOWER("email") = $1 AND "isDeleted" = false LIMIT 1`,
       body.email,
     ) as any[];
 
@@ -185,6 +191,13 @@ export class TenantUsersService {
 
     if (users[0]?.isOwner) {
       throw new BadRequestException('Cannot modify owner account');
+    }
+    if (!String(body.name || '').trim()) throw new BadRequestException('Enter the person’s name');
+    if (body.password && String(body.password).length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters');
+    }
+    if (body.status && !['ACTIVE', 'INACTIVE', 'SUSPENDED'].includes(body.status)) {
+      throw new BadRequestException('Unknown status');
     }
 
     let result: any[];

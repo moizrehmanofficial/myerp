@@ -1,569 +1,453 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { CalendarOff, Check, Pencil, Plus, Trash2, X } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import Pagination from '@/components/common/Pagination'
+import {
+  Badge, Button, Card, Field, Input, Modal, Segmented, Select, Spinner, Table, TableWrap, Tabs, Textarea, Th, Td, Tr,
+  EmptyState, IconAction, ListToolbar, FilterChips, StatusBadge, useConfirm,
+} from '@/components/ui'
+import { usePermission } from '@/hooks/usePermission'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { date } from '@/lib/format'
+import { cn } from '@/utils/utils'
 
-const STATUS_STYLES: Record<string, { bg: string; color: string; border: string }> = {
-  PENDING:  { bg: '#FFF7ED', color: '#EA580C', border: '#FED7AA' },
-  APPROVED: { bg: '#F0FDF4', color: '#16A34A', border: '#BBF7D0' },
-  REJECTED: { bg: '#FEF2F2', color: '#DC2626', border: '#FECACA' },
-}
+type Tab = 'requests' | 'balance' | 'types'
+type Status = '' | 'PENDING' | 'APPROVED' | 'REJECTED'
+
+const EMPTY_REQ = { employeeId: '', leaveTypeId: '', startDate: '', endDate: '', reason: '' }
+
+const daysBetween = (a: string, b: string) =>
+  a && b && b >= a ? Math.round((new Date(`${b}T12:00:00`).getTime() - new Date(`${a}T12:00:00`).getTime()) / 86400000) + 1 : 0
 
 export default function LeavePage() {
-  const [activeTab, setActiveTab] = useState<'requests' | 'types' | 'balance'>('requests')
+  const { canWrite, canModify, canDelete, canApprove } = usePermission()
+  const [tab, setTab] = useState<Tab>('requests')
   const [requests, setRequests] = useState<any[]>([])
-  const [leaveTypes, setLeaveTypes] = useState<any[]>([])
+  const [meta, setMeta] = useState<any>(null)
+  const [types, setTypes] = useState<any[]>([])
   const [employees, setEmployees] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
-  const [meta, setMeta] = useState<any>(null)
   const [page, setPage] = useState(1)
+  const [status, setStatus] = useState<Status>('PENDING')
+  const [who, setWho] = useState('')
+  const [confirm, confirmDialog] = useConfirm()
 
-  // Filters
-  const [filterStatus, setFilterStatus] = useState('')
-  const [filterEmployee, setFilterEmployee] = useState('')
+  const [showReq, setShowReq] = useState(false)
+  const [req, setReq] = useState(EMPTY_REQ)
+  const [reqError, setReqError] = useState('')
+  const [reqBalance, setReqBalance] = useState<any[]>([])
+  const [saving, setSaving] = useState(false)
 
-  // Leave balance
-  const [selectedEmployee, setSelectedEmployee] = useState('')
+  const [rejecting, setRejecting] = useState<any>(null)
+  const [rejectReason, setRejectReason] = useState('')
+
+  const [typeForm, setTypeForm] = useState<{ id?: string; name: string; daysAllowed: string; isPaid: 'yes' | 'no' } | null>(null)
+
+  const [balanceFor, setBalanceFor] = useState('')
   const [balance, setBalance] = useState<any[]>([])
   const [loadingBalance, setLoadingBalance] = useState(false)
 
-  // Request modal
-  const [showRequestModal, setShowRequestModal] = useState(false)
-  const [submitting, setSubmitting] = useState(false)
-  const [requestForm, setRequestForm] = useState({
-    employeeId: '',
-    leaveTypeId: '',
-    startDate: '',
-    endDate: '',
-    reason: '',
-  })
-
-  // Leave type modal
-  const [showTypeModal, setShowTypeModal] = useState(false)
-  const [editingType, setEditingType] = useState<any>(null)
-  const [typeForm, setTypeForm] = useState({ name: '', daysAllowed: '0', isPaid: true })
-  const [savingType, setSavingType] = useState(false)
-
-  // Reject modal
-  const [rejectingId, setRejectingId] = useState<string | null>(null)
-  const [rejectReason, setRejectReason] = useState('')
-
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchAll(sub)
+  const loadRequests = useCallback(async (p: number, st: Status, emp: string) => {
+    setLoading(true)
+    try {
+      const q = new URLSearchParams({ page: String(p), limit: '25' })
+      if (st) q.set('status', st)
+      if (emp) q.set('employeeId', emp)
+      const res = await tenantApi.get(`/erp/hr/leave/requests?${q}`)
+      setRequests(res.data.data || [])
+      setMeta(res.data.meta)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load leave requests.'))
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
-  function getApi(sub: string) {
-    return {
-      get: (url: string) => axios.get(`${process.env.NEXT_PUBLIC_API_URL}${url}`, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      post: (url: string, data: any) => axios.post(`${process.env.NEXT_PUBLIC_API_URL}${url}`, data, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      put: (url: string, data: any) => axios.put(`${process.env.NEXT_PUBLIC_API_URL}${url}`, data, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      patch: (url: string, data: any) => axios.patch(`${process.env.NEXT_PUBLIC_API_URL}${url}`, data, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      delete: (url: string) => axios.delete(`${process.env.NEXT_PUBLIC_API_URL}${url}`, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-    }
-  }
-
-  async function fetchAll(sub: string) {
-    setLoading(true)
+  const loadTypes = useCallback(async () => {
     try {
-      const [reqRes, typRes, empRes] = await Promise.all([
-        getApi(sub).get('/erp/hr/leave/requests?page=1&limit=25'),
-        getApi(sub).get('/erp/hr/leave/types'),
-        getApi(sub).get('/erp/hr/leave/employees'),
-      ])
-      setRequests(reqRes.data.data)
-      setMeta(reqRes.data.meta)
-      setLeaveTypes(typRes.data.data)
-      setEmployees(empRes.data.data)
-    } catch {
-      toast.error('Failed to load leave data')
-    } finally {
-      setLoading(false)
-    }
+      const r = await tenantApi.get('/erp/hr/leave/types')
+      setTypes(r.data.data || [])
+    } catch {}
+  }, [])
+
+  useEffect(() => {
+    loadRequests(page, status, who)
+  }, [loadRequests, page, status, who])
+
+  useEffect(() => {
+    loadTypes()
+    tenantApi.get('/erp/hr/leave/employees').then((r) => setEmployees(r.data.data || [])).catch(() => {})
+  }, [loadTypes])
+
+  async function getBalance(empId: string) {
+    if (!empId) return []
+    const r = await tenantApi.get(`/erp/hr/leave/balance/${empId}?year=${new Date().getFullYear()}`)
+    return r.data.data || []
   }
 
-  async function fetchRequests(sub: string, p = 1) {
-    setLoading(true)
-    try {
-      const params = new URLSearchParams({
-        page: String(p), limit: '25',
-        ...(filterStatus && { status: filterStatus }),
-        ...(filterEmployee && { employeeId: filterEmployee }),
-      })
-      const res = await getApi(sub).get(`/erp/hr/leave/requests?${params}`)
-      setRequests(res.data.data)
-      setMeta(res.data.meta)
-      setPage(p)
-    } catch {
-      toast.error('Failed to load requests')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function handleApprove(id: string) {
-    if (!confirm('Approve this leave request? Attendance will be updated automatically.')) return
-    try {
-      await getApi(subdomain).patch(`/erp/hr/leave/requests/${id}/approve`, {})
-      toast.success('Leave approved — attendance updated!')
-      fetchRequests(subdomain, page)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to approve')
-    }
-  }
-
-  async function handleReject(id: string) {
-    if (!rejectReason.trim()) { toast.error('Please provide a rejection reason'); return }
-    try {
-      await getApi(subdomain).patch(`/erp/hr/leave/requests/${id}/reject`, { reason: rejectReason })
-      toast.success('Leave rejected')
-      setRejectingId(null)
-      setRejectReason('')
-      fetchRequests(subdomain, page)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to reject')
-    }
-  }
-
-  async function handleSubmitRequest(e: React.FormEvent) {
-    e.preventDefault()
-    if (!requestForm.employeeId || !requestForm.leaveTypeId || !requestForm.startDate || !requestForm.endDate) {
-      toast.error('Please fill all required fields')
-      return
-    }
-    setSubmitting(true)
-    try {
-      await getApi(subdomain).post('/erp/hr/leave/requests', requestForm)
-      toast.success('Leave request submitted!')
-      setShowRequestModal(false)
-      setRequestForm({ employeeId: '', leaveTypeId: '', startDate: '', endDate: '', reason: '' })
-      fetchRequests(subdomain, 1)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to submit request')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  async function handleSaveType(e: React.FormEvent) {
-    e.preventDefault()
-    if (!typeForm.name) { toast.error('Name required'); return }
-    setSavingType(true)
-    try {
-      if (editingType) {
-        await getApi(subdomain).put(`/erp/hr/leave/types/${editingType.id}`, typeForm)
-        toast.success('Leave type updated')
-      } else {
-        await getApi(subdomain).post('/erp/hr/leave/types', typeForm)
-        toast.success('Leave type created')
-      }
-      setShowTypeModal(false)
-      setTypeForm({ name: '', daysAllowed: '0', isPaid: true })
-      setEditingType(null)
-      const res = await getApi(subdomain).get('/erp/hr/leave/types')
-      setLeaveTypes(res.data.data)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to save')
-    } finally {
-      setSavingType(false)
-    }
-  }
-
-  async function handleDeleteType(id: string) {
-    if (!confirm('Delete this leave type?')) return
-    try {
-      await getApi(subdomain).delete(`/erp/hr/leave/types/${id}`)
-      toast.success('Leave type deleted')
-      const res = await getApi(subdomain).get('/erp/hr/leave/types')
-      setLeaveTypes(res.data.data)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to delete')
-    }
-  }
-
-  async function fetchBalance(empId: string) {
+  async function showBalance(empId: string) {
+    setBalanceFor(empId)
+    if (!empId) return setBalance([])
     setLoadingBalance(true)
     try {
-      const res = await getApi(subdomain).get(`/erp/hr/leave/balance/${empId}?year=${new Date().getFullYear()}`)
-      setBalance(res.data.data)
-    } catch {
-      toast.error('Failed to load balance')
+      setBalance(await getBalance(empId))
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load the leave balance.'))
     } finally {
       setLoadingBalance(false)
     }
   }
 
-  // Calculate leave days preview
-  const leaveDays = requestForm.startDate && requestForm.endDate
-    ? Math.ceil((new Date(requestForm.endDate).getTime() - new Date(requestForm.startDate).getTime()) / (1000 * 60 * 60 * 24)) + 1
-    : 0
+  const reqDays = daysBetween(req.startDate, req.endDate)
+  const chosenBal = reqBalance.find((b) => b.leaveTypeId === req.leaveTypeId)
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '10px 12px',
-    border: '1.5px solid #E2E8F0', borderRadius: '8px',
-    fontSize: '13px', outline: 'none',
-    fontFamily: 'Inter, sans-serif', background: '#fff',
-    boxSizing: 'border-box',
+  async function submitReq(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!req.employeeId) return setReqError('Choose the employee.')
+    if (!req.leaveTypeId) return setReqError('Choose the type of leave.')
+    if (!req.startDate || !req.endDate) return setReqError('Choose the first and last day.')
+    if (req.endDate < req.startDate) return setReqError('The last day is before the first day.')
+    setReqError('')
+    setSaving(true)
+    try {
+      await tenantApi.post('/erp/hr/leave/requests', req)
+      toast.success('Leave request added')
+      setShowReq(false)
+      setStatus('PENDING')
+      setPage(1)
+      loadRequests(1, 'PENDING', who)
+    } catch (err) {
+      setReqError(apiError(err, 'Could not add the request.'))
+    } finally {
+      setSaving(false)
+    }
   }
 
-  const tabs = [
-    { key: 'requests', label: '📋 Leave Requests' },
-    { key: 'types', label: '⚙️ Leave Types' },
-    { key: 'balance', label: '📊 Leave Balance' },
-  ]
+  async function approve(r: any) {
+    const ok = await confirm({
+      title: `Approve ${r.employeeName}'s leave?`,
+      message: `${r.totalDays} day${Number(r.totalDays) === 1 ? '' : 's'} of ${r.leaveTypeName}, ${date(r.startDate)} to ${date(r.endDate)}. These days are marked as Leave in attendance.`,
+      confirmLabel: 'Approve',
+    })
+    if (!ok) return
+    try {
+      await tenantApi.patch(`/erp/hr/leave/requests/${r.id}/approve`)
+      toast.success('Approved. Attendance updated.')
+      loadRequests(page, status, who)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not approve.'))
+    }
+  }
+
+  async function reject() {
+    if (!rejectReason.trim()) return toast.error('Write a short reason for the employee.')
+    try {
+      await tenantApi.patch(`/erp/hr/leave/requests/${rejecting.id}/reject`, { reason: rejectReason.trim() })
+      toast.success('Request rejected')
+      setRejecting(null)
+      loadRequests(page, status, who)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not reject.'))
+    }
+  }
+
+  async function saveType(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!typeForm || !typeForm.name.trim()) return toast.error('Enter a name for this leave type.')
+    const body = { name: typeForm.name.trim(), daysAllowed: Number(typeForm.daysAllowed) || 0, isPaid: typeForm.isPaid === 'yes' }
+    try {
+      if (typeForm.id) await tenantApi.put(`/erp/hr/leave/types/${typeForm.id}`, body)
+      else await tenantApi.post('/erp/hr/leave/types', body)
+      toast.success(typeForm.id ? 'Leave type saved' : 'Leave type added')
+      setTypeForm(null)
+      loadTypes()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not save the leave type.'))
+    }
+  }
+
+  async function deleteType(t: any) {
+    const ok = await confirm({ title: `Delete "${t.name}"?`, message: 'Requests already made with this type are kept.', confirmLabel: 'Delete', danger: true })
+    if (!ok) return
+    try {
+      await tenantApi.delete(`/erp/hr/leave/types/${t.id}`)
+      toast.success(`${t.name} deleted`)
+      loadTypes()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not delete. It may still be in use.'))
+    }
+  }
 
   return (
     <TenantLayout
-      title="Leave Management"
-      subtitle="Manage employee leave requests and policies"
+      title="Leave"
+      subtitle="Leave requests, approvals and how many days each person has left"
       requiredModule="hr"
       headerRight={
-        activeTab === 'requests' ? (
-          <button onClick={() => setShowRequestModal(true)} style={{ padding: '10px 18px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-            ➕ New Leave Request
-          </button>
-        ) : activeTab === 'types' ? (
-          <button onClick={() => { setEditingType(null); setTypeForm({ name: '', daysAllowed: '0', isPaid: true }); setShowTypeModal(true) }} style={{ padding: '10px 18px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-            ➕ Add Leave Type
-          </button>
-        ) : null
+        tab === 'types'
+          ? canWrite('hr') && <Button icon={<Plus className="size-4" />} onClick={() => setTypeForm({ name: '', daysAllowed: '0', isPaid: 'yes' })}>Add leave type</Button>
+          : canWrite('hr') && (
+              <Button icon={<Plus className="size-4" />} onClick={() => { setReq(EMPTY_REQ); setReqBalance([]); setReqError(''); setShowReq(true) }}>
+                New leave request
+              </Button>
+            )
       }
     >
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', background: '#F1F5F9', padding: '4px', borderRadius: '10px', width: 'fit-content' }}>
-        {tabs.map((tab) => (
-          <button key={tab.key} onClick={() => setActiveTab(tab.key as any)} style={{
-            padding: '8px 20px', borderRadius: '8px', border: 'none',
-            background: activeTab === tab.key ? '#fff' : 'transparent',
-            color: activeTab === tab.key ? '#0F172A' : '#64748B',
-            fontSize: '13px', fontWeight: activeTab === tab.key ? 700 : 500,
-            cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-            boxShadow: activeTab === tab.key ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-          }}>{tab.label}</button>
-        ))}
-      </div>
+      <Card>
+        <Tabs
+          tabs={[
+            { key: 'requests', label: 'Requests' },
+            { key: 'balance', label: 'Days left' },
+            { key: 'types', label: 'Leave types', count: types.length },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
 
-      {loading && activeTab === 'requests' ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <>
-          {/* ── REQUESTS TAB ── */}
-          {activeTab === 'requests' && (
-            <>
-              {/* Filters */}
-              <div style={{ display: 'flex', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
-                <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}
-                  style={{ padding: '9px 12px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
-                  <option value="">All Status</option>
-                  <option value="PENDING">Pending</option>
-                  <option value="APPROVED">Approved</option>
-                  <option value="REJECTED">Rejected</option>
-                </select>
-                <select value={filterEmployee} onChange={(e) => setFilterEmployee(e.target.value)}
-                  style={{ padding: '9px 12px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff', minWidth: '200px' }}>
-                  <option value="">All Employees</option>
-                  {employees.map((e: any) => <option key={e.id} value={e.id}>{e.name}</option>)}
-                </select>
-                <button onClick={() => fetchRequests(subdomain, 1)} style={{ padding: '9px 18px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                  🔍 Filter
-                </button>
-              </div>
+        {tab === 'requests' && (
+          <>
+            <ListToolbar>
+              <FilterChips<Status>
+                options={[{ key: 'PENDING', label: 'Waiting' }, { key: 'APPROVED', label: 'Approved' }, { key: 'REJECTED', label: 'Rejected' }, { key: '', label: 'All' }]}
+                value={status}
+                onChange={(s) => { setPage(1); setStatus(s) }}
+              />
+              <Select aria-label="Employee" value={who} onChange={(e) => { setPage(1); setWho(e.target.value) }} className="sm:ml-auto sm:w-56">
+                <option value="">All employees</option>
+                {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              </Select>
+            </ListToolbar>
+            {loading ? (
+              <Spinner label="Loading requests" />
+            ) : requests.length === 0 ? (
+              <EmptyState icon={<CalendarOff />} title={status === 'PENDING' ? 'Nothing waiting for approval' : 'No leave requests'} />
+            ) : (
+              <>
+                <TableWrap>
+                  <Table>
+                    <thead>
+                      <tr>
+                        <Th>Employee</Th>
+                        <Th>Dates</Th>
+                        <Th className="hidden md:table-cell">Type</Th>
+                        <Th>Status</Th>
+                        <Th align="right"><span className="sr-only">Actions</span></Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {requests.map((r) => (
+                        <Tr key={r.id}>
+                          <Td>
+                            <p className="font-medium">{r.employeeName}</p>
+                            <p className="text-xs text-ink-3">{[r.employeeCode, r.department].filter(Boolean).join(', ')}</p>
+                          </Td>
+                          <Td>
+                            <p className="whitespace-nowrap">{date(r.startDate)}{r.totalDays > 1 ? ` to ${date(r.endDate)}` : ''}</p>
+                            <p className="text-xs text-ink-3">
+                              {r.totalDays} day{Number(r.totalDays) === 1 ? '' : 's'}
+                              <span className="md:hidden">, {r.leaveTypeName}</span>
+                            </p>
+                            {r.reason && <p className="mt-0.5 max-w-xs truncate text-xs text-ink-3" title={r.reason}>{r.reason}</p>}
+                          </Td>
+                          <Td className="hidden md:table-cell">
+                            <p>{r.leaveTypeName}</p>
+                            <p className="text-xs text-ink-3">{r.isPaid ? 'Paid' : 'Unpaid'}</p>
+                          </Td>
+                          <Td>
+                            <StatusBadge status={r.status} />
+                            {r.status === 'REJECTED' && r.rejectionReason && <p className="mt-0.5 max-w-48 truncate text-xs text-ink-3" title={r.rejectionReason}>{r.rejectionReason}</p>}
+                          </Td>
+                          <Td align="right" className="whitespace-nowrap">
+                            {r.status === 'PENDING' && canApprove('hr') && (
+                              <div className="flex justify-end gap-1.5">
+                                <Button size="sm" variant="secondary" icon={<Check className="size-3.5" />} onClick={() => approve(r)}>Approve</Button>
+                                <Button size="sm" variant="danger-soft" icon={<X className="size-3.5" />} onClick={() => { setRejecting(r); setRejectReason('') }}>Reject</Button>
+                              </div>
+                            )}
+                          </Td>
+                        </Tr>
+                      ))}
+                    </tbody>
+                  </Table>
+                </TableWrap>
+                {meta && meta.totalPages > 1 && <Pagination page={page} totalPages={meta.totalPages} total={meta.total} limit={25} onPageChange={setPage} onLimitChange={() => {}} />}
+              </>
+            )}
+          </>
+        )}
 
-              {requests.length === 0 ? (
-                <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '60px', textAlign: 'center' }}>
-                  <div style={{ fontSize: '40px', marginBottom: '12px' }}>📋</div>
-                  <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>No leave requests</h3>
-                  <p style={{ color: '#94A3B8', fontSize: '13px' }}>Leave requests will appear here</p>
-                </div>
-              ) : (
-                <>
-                  <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                      <thead>
-                        <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                          {['Employee', 'Leave Type', 'From', 'To', 'Days', 'Reason', 'Status', 'Actions'].map((h) => (
-                            <th key={h} style={{ padding: '12px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {requests.map((req: any, i: number) => {
-                          const ss = STATUS_STYLES[req.status] || STATUS_STYLES.PENDING
-                          return (
-                            <tr key={req.id} style={{ borderBottom: i < requests.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                              onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                            >
-                              <td style={{ padding: '12px 14px' }}>
-                                <div style={{ fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>{req.employeeName}</div>
-                                <div style={{ fontSize: '11px', color: '#94A3B8' }}>{req.department || ''}</div>
-                              </td>
-                              <td style={{ padding: '12px 14px' }}>
-                                <div style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>{req.leaveTypeName}</div>
-                                <div style={{ fontSize: '11px', color: req.isPaid ? '#16A34A' : '#EA580C' }}>{req.isPaid ? 'Paid' : 'Unpaid'}</div>
-                              </td>
-                              <td style={{ padding: '12px 14px', fontSize: '12px', color: '#64748B' }}>{new Date(req.startDate).toLocaleDateString()}</td>
-                              <td style={{ padding: '12px 14px', fontSize: '12px', color: '#64748B' }}>{new Date(req.endDate).toLocaleDateString()}</td>
-                              <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 800, color: '#1E3A5F' }}>{req.totalDays}d</td>
-                              <td style={{ padding: '12px 14px', fontSize: '12px', color: '#64748B', maxWidth: '150px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{req.reason || '—'}</td>
-                              <td style={{ padding: '12px 14px' }}>
-                                <span style={{ padding: '4px 10px', borderRadius: '99px', fontSize: '11px', fontWeight: 600, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}` }}>
-                                  {req.status}
-                                </span>
-                                {req.status === 'REJECTED' && req.rejectionReason && (
-                                  <div style={{ fontSize: '10px', color: '#DC2626', marginTop: '2px' }} title={req.rejectionReason}>
-                                    {req.rejectionReason.slice(0, 30)}...
-                                  </div>
-                                )}
-                              </td>
-                              <td style={{ padding: '12px 14px' }}>
-                                {req.status === 'PENDING' && (
-                                  <div style={{ display: 'flex', gap: '4px' }}>
-                                    <button onClick={() => handleApprove(req.id)} style={{ padding: '5px 10px', background: '#F0FDF4', color: '#16A34A', border: '1px solid #BBF7D0', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>✓ Approve</button>
-                                    <button onClick={() => { setRejectingId(req.id); setRejectReason('') }} style={{ padding: '5px 10px', background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>✕ Reject</button>
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          )
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-
-                  {/* Pagination */}
-                  {meta && meta.totalPages > 1 && (
-                    <div style={{ display: 'flex', justifyContent: 'center', gap: '6px', marginTop: '16px' }}>
-                      <button onClick={() => fetchRequests(subdomain, page - 1)} disabled={page === 1} style={{ padding: '7px 14px', background: '#fff', border: '1px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', cursor: page === 1 ? 'not-allowed' : 'pointer', color: page === 1 ? '#CBD5E1' : '#374151', fontFamily: 'Inter, sans-serif' }}>← Prev</button>
-                      <span style={{ padding: '7px 14px', fontSize: '13px', color: '#64748B' }}>Page {page} of {meta.totalPages} ({meta.total} total)</span>
-                      <button onClick={() => fetchRequests(subdomain, page + 1)} disabled={page === meta.totalPages} style={{ padding: '7px 14px', background: '#fff', border: '1px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', cursor: page === meta.totalPages ? 'not-allowed' : 'pointer', color: page === meta.totalPages ? '#CBD5E1' : '#374151', fontFamily: 'Inter, sans-serif' }}>Next →</button>
-                    </div>
-                  )}
-                </>
-              )}
-            </>
-          )}
-
-          {/* ── LEAVE TYPES TAB ── */}
-          {activeTab === 'types' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '14px' }}>
-              {leaveTypes.map((lt: any) => (
-                <div key={lt.id} style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '20px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
-                    <div>
-                      <div style={{ fontSize: '15px', fontWeight: 700, color: '#0F172A', marginBottom: '4px' }}>{lt.name}</div>
-                      <div style={{ display: 'flex', gap: '6px' }}>
-                        <span style={{ padding: '2px 8px', background: lt.isPaid ? '#F0FDF4' : '#FFF7ED', color: lt.isPaid ? '#16A34A' : '#EA580C', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>
-                          {lt.isPaid ? '💰 Paid' : '📋 Unpaid'}
-                        </span>
-                        <span style={{ padding: '2px 8px', background: '#EFF6FF', color: '#1D4ED8', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>
-                          {lt.daysAllowed > 0 ? `${lt.daysAllowed} days/year` : 'Unlimited'}
-                        </span>
+        {tab === 'balance' && (
+          <>
+            <ListToolbar>
+              <Select aria-label="Employee" value={balanceFor} onChange={(e) => showBalance(e.target.value)} className="sm:w-72">
+                <option value="">Choose an employee</option>
+                {employees.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.employeeCode})</option>)}
+              </Select>
+              <p className="text-[13px] text-ink-3">For {new Date().getFullYear()}. Only approved leave counts.</p>
+            </ListToolbar>
+            {!balanceFor ? (
+              <EmptyState icon={<CalendarOff />} title="Choose an employee" description="See how many days of each leave type they have used and have left." />
+            ) : loadingBalance ? (
+              <Spinner label="Loading" />
+            ) : (
+              <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-3">
+                {balance.map((b) => {
+                  const limited = b.allowed > 0
+                  const pct = limited ? Math.min((b.used / b.allowed) * 100, 100) : 0
+                  return (
+                    <div key={b.leaveTypeId} className="rounded-[var(--radius-control)] border border-line p-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="font-medium text-ink">{b.leaveTypeName}</p>
+                        <Badge tone={b.isPaid ? 'good' : 'neutral'}>{b.isPaid ? 'Paid' : 'Unpaid'}</Badge>
                       </div>
-                    </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontSize: '22px', fontWeight: 900, color: '#1E3A5F' }}>{lt.requestCount}</div>
-                      <div style={{ fontSize: '10px', color: '#94A3B8' }}>requests</div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '8px' }}>
-                    <button onClick={() => { setEditingType(lt); setTypeForm({ name: lt.name, daysAllowed: String(lt.daysAllowed), isPaid: lt.isPaid }); setShowTypeModal(true) }} style={{ flex: 1, padding: '8px', background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>✏️ Edit</button>
-                    <button onClick={() => handleDeleteType(lt.id)} style={{ padding: '8px 12px', background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Delete</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* ── BALANCE TAB ── */}
-          {activeTab === 'balance' && (
-            <>
-              <div style={{ display: 'flex', gap: '12px', marginBottom: '20px', alignItems: 'flex-end' }}>
-                <div style={{ flex: 1, maxWidth: '300px' }}>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Select Employee</label>
-                  <select value={selectedEmployee} onChange={(e) => setSelectedEmployee(e.target.value)}
-                    style={{ width: '100%', padding: '10px 12px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
-                    <option value="">Select Employee...</option>
-                    {employees.map((e: any) => <option key={e.id} value={e.id}>{e.name} ({e.employeeCode})</option>)}
-                  </select>
-                </div>
-                <button
-                  onClick={() => selectedEmployee && fetchBalance(selectedEmployee)}
-                  disabled={!selectedEmployee || loadingBalance}
-                  style={{ padding: '10px 20px', background: !selectedEmployee ? '#94A3B8' : '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: !selectedEmployee ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}
-                >
-                  {loadingBalance ? 'Loading...' : '📊 Check Balance'}
-                </button>
-              </div>
-
-              {balance.length > 0 && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: '14px' }}>
-                  {balance.map((b: any) => {
-                    const pct = b.allowed > 0 ? Math.round((b.used / b.allowed) * 100) : 0
-                    return (
-                      <div key={b.leaveTypeId} style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '20px' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '14px' }}>
-                          <div>
-                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#0F172A', marginBottom: '4px' }}>{b.leaveTypeName}</div>
-                            <span style={{ padding: '2px 8px', background: b.isPaid ? '#F0FDF4' : '#FFF7ED', color: b.isPaid ? '#16A34A' : '#EA580C', borderRadius: '99px', fontSize: '10px', fontWeight: 600 }}>
-                              {b.isPaid ? 'Paid' : 'Unpaid'}
-                            </span>
-                          </div>
+                      <p className="num mt-3 text-2xl font-semibold text-ink">
+                        {limited ? b.remaining : '—'}
+                        {limited && <span className="ml-1 text-sm font-normal text-ink-3">of {b.allowed} days left</span>}
+                      </p>
+                      {limited ? (
+                        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-subtle">
+                          <div className={cn('h-full rounded-full', pct >= 100 ? 'bg-bad' : pct >= 75 ? 'bg-warn' : 'bg-brand')} style={{ width: `${pct}%` }} />
                         </div>
-
-                        {b.allowed > 0 ? (
-                          <>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                              <span style={{ fontSize: '12px', color: '#64748B' }}>Used: <strong style={{ color: '#DC2626' }}>{b.used}d</strong></span>
-                              <span style={{ fontSize: '12px', color: '#64748B' }}>Allowed: <strong>{b.allowed}d</strong></span>
-                              <span style={{ fontSize: '12px', color: '#64748B' }}>Left: <strong style={{ color: '#16A34A' }}>{b.remaining}d</strong></span>
-                            </div>
-                            <div style={{ height: '8px', background: '#F1F5F9', borderRadius: '99px', overflow: 'hidden' }}>
-                              <div style={{ height: '100%', width: `${Math.min(100, pct)}%`, background: pct >= 80 ? '#DC2626' : pct >= 50 ? '#EA580C' : '#16A34A', borderRadius: '99px', transition: 'width 0.5s ease' }} />
-                            </div>
-                            <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '4px', textAlign: 'right' }}>{pct}% used</div>
-                          </>
-                        ) : (
-                          <div style={{ fontSize: '13px', color: '#94A3B8', textAlign: 'center', padding: '8px 0' }}>
-                            {b.used > 0 ? `${b.used} days taken` : 'No limit set'}
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </>
-          )}
-        </>
-      )}
-
-      {/* ── REQUEST MODAL ── */}
-      {showRequestModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: '20px' }}>
-          <div style={{ background: '#fff', borderRadius: '20px', padding: '32px', width: '100%', maxWidth: '520px', boxShadow: '0 25px 60px rgba(0,0,0,0.15)' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '24px' }}>📋 New Leave Request</h3>
-            <form onSubmit={handleSubmitRequest}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Employee *</label>
-                  <select value={requestForm.employeeId} onChange={(e) => setRequestForm({ ...requestForm, employeeId: e.target.value })} style={inputStyle}>
-                    <option value="">Select Employee...</option>
-                    {employees.map((e: any) => <option key={e.id} value={e.id}>{e.name} ({e.employeeCode})</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Leave Type *</label>
-                  <select value={requestForm.leaveTypeId} onChange={(e) => setRequestForm({ ...requestForm, leaveTypeId: e.target.value })} style={inputStyle}>
-                    <option value="">Select Leave Type...</option>
-                    {leaveTypes.map((lt: any) => <option key={lt.id} value={lt.id}>{lt.name} ({lt.daysAllowed > 0 ? `${lt.daysAllowed} days/yr` : 'Unlimited'})</option>)}
-                  </select>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Start Date *</label>
-                    <input type="date" value={requestForm.startDate} onChange={(e) => setRequestForm({ ...requestForm, startDate: e.target.value })} style={inputStyle} />
-                  </div>
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>End Date *</label>
-                    <input type="date" value={requestForm.endDate} onChange={(e) => setRequestForm({ ...requestForm, endDate: e.target.value })} style={inputStyle} />
-                  </div>
-                </div>
-                {leaveDays > 0 && (
-                  <div style={{ padding: '10px 14px', background: '#EFF6FF', borderRadius: '8px', fontSize: '13px', color: '#1D4ED8', fontWeight: 600 }}>
-                    📅 Total: <strong>{leaveDays} day{leaveDays > 1 ? 's' : ''}</strong>
-                  </div>
-                )}
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Reason</label>
-                  <textarea value={requestForm.reason} onChange={(e) => setRequestForm({ ...requestForm, reason: e.target.value })} placeholder="Reason for leave..." rows={3} style={{ ...inputStyle, resize: 'vertical', lineHeight: '1.5' }} />
-                </div>
+                      ) : (
+                        <p className="mt-1 text-xs text-ink-3">No yearly limit</p>
+                      )}
+                      <p className="mt-2 text-xs text-ink-3">{b.used} day{b.used === 1 ? '' : 's'} used</p>
+                    </div>
+                  )
+                })}
               </div>
-              <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-                <button type="button" onClick={() => setShowRequestModal(false)} style={{ flex: 1, padding: '12px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-                <button type="submit" disabled={submitting} style={{ flex: 1, padding: '12px', background: submitting ? '#94A3B8' : '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: submitting ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                  {submitting ? 'Submitting...' : 'Submit Request'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+            )}
+          </>
+        )}
 
-      {/* ── LEAVE TYPE MODAL ── */}
-      {showTypeModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
-          <div style={{ background: '#fff', borderRadius: '20px', padding: '32px', width: '100%', maxWidth: '440px', boxShadow: '0 25px 60px rgba(0,0,0,0.15)' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '24px' }}>
-              {editingType ? '✏️ Edit Leave Type' : '➕ Add Leave Type'}
-            </h3>
-            <form onSubmit={handleSaveType}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Type Name *</label>
-                  <input value={typeForm.name} onChange={(e) => setTypeForm({ ...typeForm, name: e.target.value })} placeholder="e.g. Annual Leave" style={inputStyle} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Days Allowed Per Year <span style={{ color: '#94A3B8', fontWeight: 400 }}>(0 = unlimited)</span></label>
-                  <input type="number" value={typeForm.daysAllowed} onChange={(e) => setTypeForm({ ...typeForm, daysAllowed: e.target.value })} min="0" style={inputStyle} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '8px' }}>Leave Category</label>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                    {[
-                      { value: true, label: '💰 Paid Leave' },
-                      { value: false, label: '📋 Unpaid Leave' },
-                    ].map((opt) => (
-                      <button key={String(opt.value)} type="button" onClick={() => setTypeForm({ ...typeForm, isPaid: opt.value })} style={{
-                        padding: '10px', border: `2px solid ${typeForm.isPaid === opt.value ? (opt.value ? '#16A34A' : '#EA580C') : '#E2E8F0'}`,
-                        borderRadius: '8px', background: typeForm.isPaid === opt.value ? (opt.value ? '#F0FDF4' : '#FFF7ED') : '#F8FAFC',
-                        color: typeForm.isPaid === opt.value ? (opt.value ? '#16A34A' : '#EA580C') : '#64748B',
-                        fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-                      }}>{opt.label}</button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-              <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-                <button type="button" onClick={() => setShowTypeModal(false)} style={{ flex: 1, padding: '12px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-                <button type="submit" disabled={savingType} style={{ flex: 1, padding: '12px', background: savingType ? '#94A3B8' : '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: savingType ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                  {savingType ? 'Saving...' : (editingType ? 'Update' : 'Create')}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+        {tab === 'types' &&
+          (types.length === 0 ? (
+            <EmptyState icon={<CalendarOff />} title="No leave types" description="Add the kinds of leave your company gives, like Annual or Sick leave." />
+          ) : (
+            <TableWrap>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Leave type</Th>
+                    <Th align="right">Days a year</Th>
+                    <Th>Pay</Th>
+                    <Th align="right"><span className="sr-only">Actions</span></Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {types.map((t) => (
+                    <Tr key={t.id}>
+                      <Td className="font-medium">{t.name}</Td>
+                      <Td align="right">{Number(t.daysAllowed) > 0 ? t.daysAllowed : 'No limit'}</Td>
+                      <Td><Badge tone={t.isPaid ? 'good' : 'neutral'}>{t.isPaid ? 'Paid' : 'Unpaid'}</Badge></Td>
+                      <Td align="right" className="whitespace-nowrap">
+                        {canModify('hr') && <IconAction label={`Edit ${t.name}`} onClick={() => setTypeForm({ id: t.id, name: t.name, daysAllowed: String(t.daysAllowed), isPaid: t.isPaid ? 'yes' : 'no' })}><Pencil /></IconAction>}
+                        {canDelete('hr') && <IconAction label={`Delete ${t.name}`} onClick={() => deleteType(t)} danger><Trash2 /></IconAction>}
+                      </Td>
+                    </Tr>
+                  ))}
+                </tbody>
+              </Table>
+            </TableWrap>
+          ))}
+      </Card>
 
-      {/* ── REJECT MODAL ── */}
-      {rejectingId && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200 }}>
-          <div style={{ background: '#fff', borderRadius: '20px', padding: '32px', width: '100%', maxWidth: '420px', boxShadow: '0 25px 60px rgba(0,0,0,0.15)' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#DC2626', marginBottom: '8px' }}>✕ Reject Leave Request</h3>
-            <p style={{ fontSize: '13px', color: '#64748B', marginBottom: '20px' }}>Please provide a reason for rejection.</p>
-            <textarea
-              value={rejectReason}
-              onChange={(e) => setRejectReason(e.target.value)}
-              placeholder="Reason for rejection..."
-              rows={4}
-              style={{ ...inputStyle, resize: 'vertical', lineHeight: '1.5', marginBottom: '20px' }}
-            />
-            <div style={{ display: 'flex', gap: '12px' }}>
-              <button onClick={() => setRejectingId(null)} style={{ flex: 1, padding: '12px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-              <button onClick={() => handleReject(rejectingId)} style={{ flex: 1, padding: '12px', background: '#DC2626', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>✕ Reject</button>
+      {/* New request */}
+      <Modal
+        open={showReq}
+        onClose={() => setShowReq(false)}
+        title="New leave request"
+        description="It waits for approval. Once approved, attendance is marked for those days."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowReq(false)}>Cancel</Button>
+            <Button onClick={() => submitReq()} loading={saving}>Add request</Button>
+          </>
+        }
+      >
+        <form onSubmit={submitReq} className="grid grid-cols-2 gap-4">
+          <Field label="Employee" required className="col-span-2">
+            {(id) => (
+              <Select id={id} value={req.employeeId} onChange={async (e) => {
+                const v = e.target.value
+                setReq({ ...req, employeeId: v })
+                setReqBalance(v ? await getBalance(v).catch(() => []) : [])
+              }}>
+                <option value="">Choose employee</option>
+                {employees.map((e) => <option key={e.id} value={e.id}>{e.name} ({e.employeeCode})</option>)}
+              </Select>
+            )}
+          </Field>
+          <Field
+            label="Type of leave"
+            required
+            className="col-span-2"
+            hint={chosenBal ? (chosenBal.allowed > 0 ? `${chosenBal.remaining} of ${chosenBal.allowed} days left this year` : 'No yearly limit') : undefined}
+          >
+            {(id) => (
+              <Select id={id} value={req.leaveTypeId} onChange={(e) => setReq({ ...req, leaveTypeId: e.target.value })}>
+                <option value="">Choose type</option>
+                {types.map((t) => <option key={t.id} value={t.id}>{t.name}{t.isPaid ? '' : ' (unpaid)'}</option>)}
+              </Select>
+            )}
+          </Field>
+          <Field label="First day" required>{(id) => <Input id={id} type="date" value={req.startDate} onChange={(e) => setReq({ ...req, startDate: e.target.value, endDate: req.endDate && req.endDate < e.target.value ? e.target.value : req.endDate })} />}</Field>
+          <Field label="Last day" required hint={reqDays ? `${reqDays} day${reqDays === 1 ? '' : 's'}` : undefined}>
+            {(id) => <Input id={id} type="date" min={req.startDate || undefined} value={req.endDate} onChange={(e) => setReq({ ...req, endDate: e.target.value })} />}
+          </Field>
+          <Field label="Reason" className="col-span-2">{(id) => <Textarea id={id} rows={3} value={req.reason} onChange={(e) => setReq({ ...req, reason: e.target.value })} />}</Field>
+          {reqError && <p className="col-span-2 rounded-[var(--radius-control)] bg-bad-soft px-3 py-2 text-[13px] text-bad">{reqError}</p>}
+          <button type="submit" className="hidden" />
+        </form>
+      </Modal>
+
+      {/* Reject */}
+      <Modal
+        open={!!rejecting}
+        onClose={() => setRejecting(null)}
+        size="sm"
+        title="Reject this request?"
+        description={rejecting ? `${rejecting.employeeName}, ${date(rejecting.startDate)} to ${date(rejecting.endDate)}` : undefined}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRejecting(null)}>Cancel</Button>
+            <Button variant="danger" onClick={reject}>Reject</Button>
+          </>
+        }
+      >
+        <Field label="Reason" required hint="The employee will see this.">
+          {(id) => <Textarea id={id} rows={3} value={rejectReason} onChange={(e) => setRejectReason(e.target.value)} autoFocus />}
+        </Field>
+      </Modal>
+
+      {/* Leave type */}
+      <Modal
+        open={!!typeForm}
+        onClose={() => setTypeForm(null)}
+        title={typeForm?.id ? 'Edit leave type' : 'Add leave type'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setTypeForm(null)}>Cancel</Button>
+            <Button onClick={() => saveType()}>{typeForm?.id ? 'Save' : 'Add leave type'}</Button>
+          </>
+        }
+      >
+        {typeForm && (
+          <form onSubmit={saveType} className="grid grid-cols-2 gap-4">
+            <Field label="Name" required className="col-span-2">{(id) => <Input id={id} value={typeForm.name} onChange={(e) => setTypeForm({ ...typeForm, name: e.target.value })} placeholder="e.g. Annual leave" autoFocus />}</Field>
+            <Field label="Days a year" hint="0 means no limit">{(id) => <Input id={id} type="number" min="0" className="num" value={typeForm.daysAllowed} onChange={(e) => setTypeForm({ ...typeForm, daysAllowed: e.target.value })} />}</Field>
+            <div className="flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium text-ink-2">Pay</span>
+              <Segmented label="Pay" options={[{ key: 'yes', label: 'Paid' }, { key: 'no', label: 'Unpaid' }]} value={typeForm.isPaid} onChange={(v) => setTypeForm({ ...typeForm, isPaid: v })} />
             </div>
-          </div>
-        </div>
-      )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            <button type="submit" className="hidden" />
+          </form>
+        )}
+      </Modal>
+      {confirmDialog}
     </TenantLayout>
   )
 }

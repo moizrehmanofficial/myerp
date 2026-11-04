@@ -1,302 +1,277 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { Banknote, FileDown, FileText, Pencil, Wallet, WandSparkles } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import {
+  Button, Card, Field, Input, Modal, Segmented, Spinner, Stat, Table, TableWrap, Th, Td, Tr,
+  EmptyState, IconAction, StatusBadge, useConfirm,
+} from '@/components/ui'
+import { MONTHS, MonthBar } from '@/components/reports/ReportBits'
+import { PAY_METHODS, methodLabel } from '@/components/finance/accounting'
+import { usePermission } from '@/hooks/usePermission'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { money, date } from '@/lib/format'
+
+type Method = (typeof PAY_METHODS)[number]['key']
 
 export default function PayrollPage() {
+  const perm = usePermission()
+  // Payroll follows the "payroll" permission, or "hr" for older roles
+  const canWrite = () => perm.canWrite('payroll') || perm.canWrite('hr')
+  const canModify = () => perm.canModify('payroll') || perm.canModify('hr')
+  const now = new Date()
+  const [period, setPeriod] = useState({ month: now.getMonth() + 1, year: now.getFullYear() })
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [generating, setGenerating] = useState(false)
-  const [subdomain, setSubdomain] = useState('')
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [editForm, setEditForm] = useState<any>({})
-  const [generatingSlip, setGeneratingSlip] = useState<string | null>(null)
+  const [busy, setBusy] = useState('')
+  const [editing, setEditing] = useState<any>(null)
+  const [form, setForm] = useState({ basicSalary: '', allowances: '', deductions: '', tax: '', status: 'PENDING' as 'PENDING' | 'PAID', method: 'BANK' as Method })
+  const [saving, setSaving] = useState(false)
+  const [confirm, confirmDialog] = useConfirm()
 
-  const now = new Date()
-  const [month, setMonth] = useState(now.getMonth() + 1)
-  const [year, setYear] = useState(now.getFullYear())
+  const label = `${MONTHS[period.month - 1]} ${period.year}`
 
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchPayroll(sub, now.getMonth() + 1, now.getFullYear())
-  }, [])
-
-  async function fetchPayroll(sub: string, m: number, y: number) {
+  const load = useCallback(async (m: number, y: number) => {
     setLoading(true)
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/payroll?month=${m}&year=${y}`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const res = await tenantApi.get(`/erp/hr/payroll?month=${m}&year=${y}`)
       setData(res.data.data)
-    } catch {
-      toast.error('Failed to load payroll')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load payroll.'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  async function handleGenerate() {
-    if (!confirm(`Generate payroll for ${new Date(year, month - 1).toLocaleString('default', { month: 'long' })} ${year}? This will calculate salaries based on attendance.`)) return
-    setGenerating(true)
+  useEffect(() => {
+    load(period.month, period.year)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const rows: any[] = data?.payrolls || []
+  const s = data?.summary || {}
+  const paid = rows.filter((r) => r.status === 'PAID')
+  const pendingTotal = rows.filter((r) => r.status !== 'PAID').reduce((t, r) => t + Number(r.netSalary || 0), 0)
+
+  async function generate() {
+    const ok = await confirm({
+      title: `Generate payroll for ${label}?`,
+      message: 'A salary line is made for every active employee who does not have one yet. Absent days are deducted from basic salary. You can edit each line afterwards.',
+      confirmLabel: 'Generate payroll',
+    })
+    if (!ok) return
+    setBusy('generate')
     try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/payroll/generate`,
-        { month, year },
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
-      )
-      toast.success(res.data.message)
-      fetchPayroll(subdomain, month, year)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to generate payroll')
+      const res = await tenantApi.post('/erp/hr/payroll/generate', { month: period.month, year: period.year })
+      toast.success(res.data.message || 'Payroll generated')
+      load(period.month, period.year)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not generate payroll.'))
     } finally {
-      setGenerating(false)
+      setBusy('')
     }
   }
 
-  async function handleUpdate(id: string) {
+  async function slips() {
+    setBusy('slips')
     try {
-      await axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/payroll/${id}`,
-        editForm,
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
-      )
-      toast.success('Payroll updated')
-      setEditingId(null)
-      fetchPayroll(subdomain, month, year)
-    } catch {
-      toast.error('Failed to update')
-    }
-  }
-
-  async function handleGenerateSlip(payrollId: string) {
-    setGeneratingSlip(payrollId)
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/payroll/${payrollId}/generate-slip`,
-        {},
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
-      )
-      toast.success(`Salary slip generated for ${res.data.data.employeeName}!`)
-      window.open(res.data.data.downloadUrl, '_blank')
-      fetchPayroll(subdomain, month, year)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to generate slip')
+      const res = await tenantApi.post('/erp/hr/payroll/bulk-slips', { month: period.month, year: period.year })
+      toast.success(res.data.message || 'Salary slips ready')
+      load(period.month, period.year)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not make salary slips.'))
     } finally {
-      setGeneratingSlip(null)
+      setBusy('')
     }
   }
 
-  async function handleDownloadSlip(payrollId: string) {
+  async function slip(p: any) {
+    setBusy(p.id)
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/payroll/${payrollId}/slip-url`,
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
-      )
-      window.open(res.data.data.downloadUrl, '_blank')
-    } catch {
-      toast.error('Slip not generated yet. Click Generate first.')
-    }
-  }
-
-  async function handleBulkGenerate() {
-    if (!confirm(`Generate salary slips for ALL employees for ${new Date(year, month - 1).toLocaleString('default', { month: 'long' })} ${year}?`)) return
-    setGenerating(true)
-    try {
-      const res = await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/payroll/bulk-slips`,
-        { month, year },
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
-      )
-      toast.success(res.data.message)
-      fetchPayroll(subdomain, month, year)
-    } catch {
-      toast.error('Failed to generate bulk slips')
+      const res = p.slipUrl
+        ? await tenantApi.get(`/erp/hr/payroll/${p.id}/slip-url`)
+        : await tenantApi.post(`/erp/hr/payroll/${p.id}/generate-slip`)
+      const url = res.data.data?.downloadUrl
+      if (url) window.open(url, '_blank', 'noopener')
+      if (!p.slipUrl) load(period.month, period.year)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not open the salary slip.'))
     } finally {
-      setGenerating(false)
+      setBusy('')
     }
   }
 
-  const s = data?.summary
-  const payrolls = data?.payrolls || []
+  function edit(p: any, payNow = false) {
+    setEditing({ ...p, payNow })
+    setForm({
+      basicSalary: String(Number(p.basicSalary || 0)),
+      allowances: String(Number(p.allowances || 0)),
+      deductions: String(Number(p.deductions || 0)),
+      tax: String(Number(p.tax || 0)),
+      status: payNow ? 'PAID' : p.status === 'PAID' ? 'PAID' : 'PENDING',
+      method: (p.paidMethod as Method) || 'BANK',
+    })
+  }
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '6px 8px',
-    border: '1.5px solid #E2E8F0', borderRadius: '6px',
-    fontSize: '12px', outline: 'none',
-    fontFamily: 'Inter, sans-serif', background: '#fff',
-    boxSizing: 'border-box',
+  const n = (v: string) => Math.round((parseFloat(v) || 0) * 100) / 100
+  const net = Math.max(n(form.basicSalary) + n(form.allowances) - n(form.deductions) - n(form.tax), 0)
+
+  async function save(e?: React.FormEvent) {
+    e?.preventDefault()
+    setSaving(true)
+    try {
+      await tenantApi.put(`/erp/hr/payroll/${editing.id}`, { ...form })
+      toast.success(form.status === 'PAID' && editing.status !== 'PAID' ? `${editing.employeeName} marked paid` : 'Salary saved')
+      setEditing(null)
+      load(period.month, period.year)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not save.'))
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
     <TenantLayout
       title="Payroll"
-      subtitle="Monthly salary processing"
+      subtitle="Monthly salaries. Paying a salary records it in the accounts."
       requiredModule="hr"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <select value={month} onChange={(e) => { setMonth(+e.target.value); fetchPayroll(subdomain, +e.target.value, year) }}
-            style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }}>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-              <option key={m} value={m}>{new Date(2024, m - 1).toLocaleString('default', { month: 'long' })}</option>
-            ))}
-          </select>
-          <select value={year} onChange={(e) => { setYear(+e.target.value); fetchPayroll(subdomain, month, +e.target.value) }}
-            style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }}>
-            {[2024, 2025, 2026, 2027].map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
+        <>
           <ExportButton
-            data={payrolls}
-            filename={`payroll-${month}-${year}`}
-            title={`Payroll Report — ${new Date(year, month - 1).toLocaleString('default', { month: 'long' })} ${year}`}
-            subtitle={`${subdomain} ERP`}
+            data={rows}
+            filename={`payroll-${period.year}-${period.month}`}
+            title={`Payroll: ${label}`}
             columns={[
-              { header: 'Code', value: (r) => r.employeeCode, width: 12 },
-              { header: 'Employee', value: (r) => r.employeeName, width: 25 },
-              { header: 'Department', value: (r) => r.department || '', width: 18 },
-              { header: 'Basic (PKR)', value: (r) => parseFloat(r.basicSalary || 0).toFixed(2), width: 15 },
-              { header: 'Allowances (PKR)', value: (r) => parseFloat(r.allowances || 0).toFixed(2), width: 18 },
-              { header: 'Deductions (PKR)', value: (r) => parseFloat(r.deductions || 0).toFixed(2), width: 18 },
-              { header: 'Tax (PKR)', value: (r) => parseFloat(r.tax || 0).toFixed(2), width: 12 },
-              { header: 'Net Salary (PKR)', value: (r) => parseFloat(r.netSalary || 0).toFixed(2), width: 18 },
-              { header: 'Status', value: (r) => r.status, width: 10 },
+              { header: 'Employee', value: (r: any) => r.employeeName, width: 24 },
+              { header: 'Code', value: (r: any) => r.employeeCode, width: 10 },
+              { header: 'Basic', value: (r: any) => Number(r.basicSalary || 0).toFixed(2), width: 12 },
+              { header: 'Allowances', value: (r: any) => Number(r.allowances || 0).toFixed(2), width: 12 },
+              { header: 'Deductions', value: (r: any) => Number(r.deductions || 0).toFixed(2), width: 12 },
+              { header: 'Tax', value: (r: any) => Number(r.tax || 0).toFixed(2), width: 10 },
+              { header: 'Net pay', value: (r: any) => Number(r.netSalary || 0).toFixed(2), width: 14 },
+              { header: 'Status', value: (r: any) => r.status, width: 10 },
             ]}
-            disabled={payrolls.length === 0}
           />
-          <button onClick={handleBulkGenerate} disabled={generating || payrolls.length === 0} style={{
-            padding: '8px 18px', background: payrolls.length === 0 ? '#94A3B8' : '#7C3AED',
-            color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px',
-            fontWeight: 600, cursor: payrolls.length === 0 ? 'not-allowed' : 'pointer',
-            fontFamily: 'Inter, sans-serif',
-          }}>📄 Generate All Slips</button>
-          <button onClick={handleGenerate} disabled={generating} style={{
-            padding: '8px 18px', background: generating ? '#94A3B8' : '#1E3A5F',
-            color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px',
-            fontWeight: 600, cursor: generating ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif',
-          }}>{generating ? 'Generating...' : '⚡ Generate Payroll'}</button>
-        </div>
+          {rows.length > 0 && <Button variant="secondary" icon={<FileText className="size-4" />} loading={busy === 'slips'} onClick={slips}>Salary slips</Button>}
+          {canWrite() && <Button icon={<WandSparkles className="size-4" />} loading={busy === 'generate'} onClick={generate}>Generate payroll</Button>}
+        </>
       }
     >
-      {/* Summary */}
-      {s && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px', marginBottom: '24px' }}>
-          {[
-            { label: 'Employees', value: s.totalEmployees, icon: '👤', color: '#1D4ED8', bg: '#EFF6FF' },
-            { label: 'Basic Salary', value: `PKR ${s.totalBasic?.toLocaleString()}`, icon: '💰', color: '#374151', bg: '#F1F5F9' },
-            { label: 'Allowances', value: `PKR ${s.totalAllowances?.toLocaleString()}`, icon: '➕', color: '#16A34A', bg: '#F0FDF4' },
-            { label: 'Deductions', value: `PKR ${s.totalDeductions?.toLocaleString()}`, icon: '➖', color: '#DC2626', bg: '#FEF2F2' },
-            { label: 'Net Payroll', value: `PKR ${s.totalPayroll?.toLocaleString()}`, icon: '✓', color: '#7C3AED', bg: '#FAF5FF' },
-          ].map((c) => (
-            <div key={c.label} style={{ background: '#fff', borderRadius: '12px', padding: '14px', border: '1px solid #E2E8F0' }}>
-              <div style={{ width: '32px', height: '32px', background: c.bg, borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '14px', marginBottom: '8px' }}>{c.icon}</div>
-              <p style={{ fontSize: '14px', fontWeight: 800, color: c.color, marginBottom: '2px' }}>{c.value}</p>
-              <p style={{ fontSize: '11px', fontWeight: 600, color: '#94A3B8' }}>{c.label}</p>
+      <div className="flex flex-col gap-5">
+        <MonthBar month={period.month} year={period.year} onApply={(m, y) => { setPeriod({ month: m, year: y }); load(m, y) }} />
+        {loading && !data ? (
+          <Spinner label="Loading payroll" />
+        ) : rows.length === 0 ? (
+          <Card>
+            <EmptyState
+              icon={<Wallet />}
+              title={`No payroll for ${label} yet`}
+              description="Generate it to make a salary line for every active employee, based on their salary and attendance."
+              action={canWrite() ? <Button icon={<WandSparkles className="size-4" />} loading={busy === 'generate'} onClick={generate}>Generate payroll</Button> : undefined}
+            />
+          </Card>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Stat label="Employees" value={s.totalEmployees} sub={label} />
+              <Stat label="Total net pay" value={money(s.totalPayroll)} />
+              <Stat label="Paid" value={`${paid.length} of ${rows.length}`} sub={money(paid.reduce((t, r) => t + Number(r.netSalary || 0), 0))} />
+              <Stat label="Still to pay" value={<span className={pendingTotal > 0 ? 'text-warn' : ''}>{money(pendingTotal)}</span>} />
             </div>
-          ))}
-        </div>
-      )}
-
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : payrolls.length === 0 ? (
-        <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '80px', textAlign: 'center' }}>
-          <div style={{ fontSize: '48px', marginBottom: '12px' }}>💵</div>
-          <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>No payroll generated</h3>
-          <p style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '20px' }}>Click "Generate Payroll" to calculate salaries for this month</p>
-        </div>
-      ) : (
-        <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                {['Employee', 'Dept', 'Basic', 'Allowances', 'Deductions', 'Tax', 'Net Salary', 'Status', 'Actions'].map((h) => (
-                  <th key={h} style={{ padding: '12px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {payrolls.map((p: any, i: number) => {
-                const isEditing = editingId === p.id
-                return (
-                  <tr key={p.id} style={{ borderBottom: i < payrolls.length - 1 ? '1px solid #F1F5F9' : 'none', background: isEditing ? '#F8FAFC' : 'transparent' }}>
-                    <td style={{ padding: '12px 14px' }}>
-                      <div style={{ fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>{p.employeeName}</div>
-                      <div style={{ fontSize: '11px', color: '#94A3B8' }}>{p.employeeCode}</div>
-                    </td>
-                    <td style={{ padding: '12px 14px', fontSize: '12px', color: '#64748B' }}>{p.department || '—'}</td>
-                    <td style={{ padding: '12px 14px' }}>
-                      {isEditing ? <input type="number" value={editForm.basicSalary} onChange={(e) => setEditForm({ ...editForm, basicSalary: e.target.value })} style={{ ...inputStyle, width: '90px' }} /> : <span style={{ fontSize: '13px', fontWeight: 600 }}>{Number(p.basicSalary || 0).toLocaleString()}</span>}
-                    </td>
-                    <td style={{ padding: '12px 14px' }}>
-                      {isEditing ? <input type="number" value={editForm.allowances} onChange={(e) => setEditForm({ ...editForm, allowances: e.target.value })} style={{ ...inputStyle, width: '80px' }} /> : <span style={{ fontSize: '13px', color: '#16A34A', fontWeight: 600 }}>{Number(p.allowances || 0).toLocaleString()}</span>}
-                    </td>
-                    <td style={{ padding: '12px 14px' }}>
-                      {isEditing ? <input type="number" value={editForm.deductions} onChange={(e) => setEditForm({ ...editForm, deductions: e.target.value })} style={{ ...inputStyle, width: '80px' }} /> : <span style={{ fontSize: '13px', color: '#DC2626', fontWeight: 600 }}>{Number(p.deductions || 0).toLocaleString()}</span>}
-                    </td>
-                    <td style={{ padding: '12px 14px' }}>
-                      {isEditing ? <input type="number" value={editForm.tax} onChange={(e) => setEditForm({ ...editForm, tax: e.target.value })} style={{ ...inputStyle, width: '70px' }} /> : <span style={{ fontSize: '13px', color: '#EA580C' }}>{Number(p.tax || 0).toLocaleString()}</span>}
-                    </td>
-                    <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 800, color: '#7C3AED' }}>
-                      PKR {Number(p.netSalary || 0).toLocaleString()}
-                    </td>
-                    <td style={{ padding: '12px 14px' }}>
-                      {isEditing ? (
-                        <select value={editForm.status} onChange={(e) => setEditForm({ ...editForm, status: e.target.value })} style={{ ...inputStyle, width: '100px' }}>
-                          <option value="PENDING">Pending</option>
-                          <option value="PAID">Paid</option>
-                        </select>
-                      ) : (
-                        <span style={{
-                          padding: '3px 8px', borderRadius: '99px', fontSize: '11px', fontWeight: 600,
-                          background: p.status === 'PAID' ? '#F0FDF4' : '#FFF7ED',
-                          color: p.status === 'PAID' ? '#16A34A' : '#EA580C',
-                          border: `1px solid ${p.status === 'PAID' ? '#BBF7D0' : '#FED7AA'}`,
-                        }}>{p.status}</span>
-                      )}
-                    </td>
-                    <td style={{ padding: '12px 14px' }}>
-                      {isEditing ? (
-                        <div style={{ display: 'flex', gap: '4px' }}>
-                          <button onClick={() => handleUpdate(p.id)} style={{ padding: '5px 10px', background: '#F0FDF4', color: '#16A34A', border: '1px solid #BBF7D0', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Save</button>
-                          <button onClick={() => setEditingId(null)} style={{ padding: '5px 10px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-                        </div>
-                      ) : (
-                        <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                          <button onClick={() => {
-                            setEditingId(p.id)
-                            setEditForm({ basicSalary: p.basicSalary, allowances: p.allowances, deductions: p.deductions, tax: p.tax, status: p.status })
-                          }} style={{ padding: '5px 10px', background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Edit</button>
-                          <button
-                            onClick={() => handleGenerateSlip(p.id)}
-                            disabled={generatingSlip === p.id}
-                            style={{ padding: '5px 10px', background: '#FAF5FF', color: '#7C3AED', border: '1px solid #E9D5FF', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: generatingSlip === p.id ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}
-                          >
-                            {generatingSlip === p.id ? '...' : '📄 Slip'}
-                          </button>
-                          {p.slipUrl && (
-                            <button
-                              onClick={() => handleDownloadSlip(p.id)}
-                              style={{ padding: '5px 10px', background: '#F0FDF4', color: '#16A34A', border: '1px solid #BBF7D0', borderRadius: '6px', fontSize: '11px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}
-                            >⬇️</button>
+            <Card>
+              <TableWrap>
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>Employee</Th>
+                      <Th align="right" className="hidden md:table-cell">Basic</Th>
+                      <Th align="right" className="hidden xl:table-cell">Allowances</Th>
+                      <Th align="right" className="hidden lg:table-cell">Deductions</Th>
+                      <Th align="right" className="hidden xl:table-cell">Tax</Th>
+                      <Th align="right">Net pay</Th>
+                      <Th>Status</Th>
+                      <Th align="right"><span className="sr-only">Actions</span></Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((p) => (
+                      <Tr key={p.id}>
+                        <Td>
+                          <p className="font-medium">{p.employeeName}</p>
+                          <p className="text-xs text-ink-3">{[p.employeeCode, p.designation || p.department].filter(Boolean).join(', ')}</p>
+                        </Td>
+                        <Td align="right" className="hidden md:table-cell">{money(p.basicSalary)}</Td>
+                        <Td align="right" className="hidden text-ink-2 xl:table-cell">{Number(p.allowances) ? money(p.allowances) : '—'}</Td>
+                        <Td align="right" className="hidden text-ink-2 lg:table-cell">{Number(p.deductions) ? money(p.deductions) : '—'}</Td>
+                        <Td align="right" className="hidden text-ink-2 xl:table-cell">{Number(p.tax) ? money(p.tax) : '—'}</Td>
+                        <Td align="right" className="font-semibold">{money(p.netSalary)}</Td>
+                        <Td>
+                          <StatusBadge status={p.status} />
+                          {p.status === 'PAID' && p.paidAt && <p className="mt-0.5 text-xs whitespace-nowrap text-ink-3">{methodLabel(p.paidMethod)}, {date(p.paidAt)}</p>}
+                        </Td>
+                        <Td align="right" className="whitespace-nowrap">
+                          {p.status !== 'PAID' && canModify() && (
+                            <Button size="sm" variant="secondary" icon={<Banknote className="size-3.5" />} onClick={() => edit(p, true)} className="mr-1">
+                              Pay
+                            </Button>
                           )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+                          <IconAction label={p.slipUrl ? 'Download salary slip' : 'Make salary slip'} onClick={() => slip(p)}>
+                            <FileDown className={busy === p.id ? 'animate-pulse' : ''} />
+                          </IconAction>
+                          {canModify() && <IconAction label={`Edit ${p.employeeName}`} onClick={() => edit(p)}><Pencil /></IconAction>}
+                        </Td>
+                      </Tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </TableWrap>
+            </Card>
+          </>
+        )}
+      </div>
+
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title={editing?.payNow ? `Pay ${editing?.employeeName}` : `Salary: ${editing?.employeeName || ''}`}
+        description={`${label}. Net pay is worked out for you.`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setEditing(null)}>Cancel</Button>
+            <Button onClick={() => save()} loading={saving}>
+              {form.status === 'PAID' && editing?.status !== 'PAID' ? `Pay ${money(net)}` : 'Save'}
+            </Button>
+          </>
+        }
+      >
+        <form onSubmit={save} className="grid grid-cols-2 gap-4">
+          <Field label="Basic salary">{(id) => <Input id={id} type="number" min="0" inputMode="decimal" className="num" value={form.basicSalary} onChange={(e) => setForm({ ...form, basicSalary: e.target.value })} />}</Field>
+          <Field label="Allowances" hint="Bonus, overtime, travel">{(id) => <Input id={id} type="number" min="0" inputMode="decimal" className="num" value={form.allowances} onChange={(e) => setForm({ ...form, allowances: e.target.value })} />}</Field>
+          <Field label="Deductions" hint="Absences, advances">{(id) => <Input id={id} type="number" min="0" inputMode="decimal" className="num" value={form.deductions} onChange={(e) => setForm({ ...form, deductions: e.target.value })} />}</Field>
+          <Field label="Income tax">{(id) => <Input id={id} type="number" min="0" inputMode="decimal" className="num" value={form.tax} onChange={(e) => setForm({ ...form, tax: e.target.value })} />}</Field>
+          <div className="col-span-2 flex items-center justify-between rounded-[var(--radius-control)] bg-subtle px-4 py-3">
+            <span className="text-sm text-ink-2">Net pay</span>
+            <span className="num text-lg font-semibold text-ink">{money(net)}</span>
+          </div>
+          <div className="col-span-2 flex flex-col gap-1.5">
+            <span className="text-[13px] font-medium text-ink-2">Status</span>
+            <Segmented label="Status" options={[{ key: 'PENDING', label: 'Not paid yet' }, { key: 'PAID', label: 'Paid' }]} value={form.status} onChange={(v) => setForm({ ...form, status: v })} />
+          </div>
+          {form.status === 'PAID' && (
+            <div className="col-span-2 flex flex-col gap-1.5">
+              <span className="text-[13px] font-medium text-ink-2">Paid by</span>
+              <Segmented label="Paid by" options={[...PAY_METHODS]} value={form.method} onChange={(v) => setForm({ ...form, method: v })} />
+              <p className="text-xs text-ink-3">Recorded in the accounts as salaries expense, paid from {form.method === 'CASH' ? 'Cash in hand' : 'the bank account'}.</p>
+            </div>
+          )}
+          <button type="submit" className="hidden" />
+        </form>
+      </Modal>
+      {confirmDialog}
     </TenantLayout>
   )
 }

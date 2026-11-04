@@ -1,630 +1,410 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { Crown, KeyRound, Pencil, Plus, ShieldCheck, Trash2, UserPlus, Users } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
+import {
+  Badge, Button, Card, Field, Input, Modal, Segmented, Select, Spinner, Table, TableWrap, Tabs, Th, Td, Tr,
+  EmptyState, IconAction, StatusBadge, useConfirm,
+} from '@/components/ui'
+import { tenantApi, apiError } from '@/lib/tenantApi'
 import { getTenantSlug } from '@/lib/getTenantSlug'
+import { date } from '@/lib/format'
+import { cn } from '@/utils/utils'
 
 const ALL_MODULES = [
-  { key: 'contacts',      label: 'Customers & Suppliers' },
-  { key: 'products',      label: 'Products' },
-  { key: 'inventory',     label: 'Inventory' },
-  { key: 'purchase',      label: 'Purchase' },
-  { key: 'sales',         label: 'Sales' },
-  { key: 'invoices',      label: 'Invoices' },
-  { key: 'finance',       label: 'Finance' },
-  { key: 'ledger',        label: 'Ledger' },
-  { key: 'hr',            label: 'HR' },
-  { key: 'payroll',       label: 'Payroll' },
-  { key: 'reports',       label: 'Reports' },
+  { key: 'contacts', label: 'Customers & suppliers' },
+  { key: 'products', label: 'Products' },
+  { key: 'inventory', label: 'Stock' },
+  { key: 'purchase', label: 'Purchases' },
+  { key: 'sales', label: 'Sales' },
+  { key: 'invoices', label: 'Invoices' },
+  { key: 'finance', label: 'Accounts' },
+  { key: 'ledger', label: 'Ledger' },
+  { key: 'hr', label: 'HR' },
+  { key: 'payroll', label: 'Payroll' },
+  { key: 'reports', label: 'Reports' },
   { key: 'manufacturing', label: 'Manufacturing' },
-  { key: 'settings',      label: 'Settings' },
+  { key: 'settings', label: 'Settings' },
 ]
 
-const PERMISSIONS = ['read', 'write', 'modify', 'delete', 'print', 'export', 'approve'] as const
-type Permission = typeof PERMISSIONS[number]
+const PERMS = ['read', 'write', 'modify', 'delete', 'print', 'export', 'approve'] as const
+type Perm = (typeof PERMS)[number]
+type Matrix = Record<string, Record<Perm, boolean>>
 
-const PERM_LABELS: Record<Permission, string> = {
-  read: 'Read', write: 'Write', modify: 'Modify',
-  delete: 'Delete', print: 'Print', export: 'Export', approve: 'Approve',
+const PERM_LABEL: Record<Perm, { short: string; long: string }> = {
+  read: { short: 'View', long: 'See records' },
+  write: { short: 'Add', long: 'Create new records' },
+  modify: { short: 'Edit', long: 'Change existing records' },
+  delete: { short: 'Delete', long: 'Delete records' },
+  print: { short: 'Print', long: 'Print documents' },
+  export: { short: 'Export', long: 'Download Excel, PDF or CSV' },
+  approve: { short: 'Approve', long: 'Approve, e.g. leave or posting' },
 }
 
-// Default permission matrix per module (matches doc section 6.2)
-const DEFAULT_MODULE_PERMISSIONS: Record<string, Record<Permission, boolean>> = {
-  dashboard:    { read: true,  write: false, modify: false, delete: false, print: false, export: false, approve: false },
-  users:        { read: true,  write: true,  modify: true,  delete: true,  print: false, export: false, approve: false },
-  contacts:     { read: true,  write: true,  modify: true,  delete: true,  print: false, export: true,  approve: false },
-  products:     { read: true,  write: true,  modify: true,  delete: true,  print: false, export: true,  approve: false },
-  inventory:    { read: true,  write: true,  modify: true,  delete: false, print: false, export: false, approve: false },
-  purchase:     { read: true,  write: true,  modify: true,  delete: false, print: true,  export: true,  approve: true  },
-  sales:        { read: true,  write: true,  modify: true,  delete: false, print: true,  export: true,  approve: false },
-  invoices:     { read: true,  write: true,  modify: true,  delete: false, print: true,  export: true,  approve: false },
-  finance:      { read: true,  write: true,  modify: true,  delete: false, print: true,  export: true,  approve: true  },
-  ledger:       { read: true,  write: false, modify: false, delete: false, print: true,  export: true,  approve: false },
-  hr:           { read: true,  write: true,  modify: true,  delete: true,  print: false, export: true,  approve: false },
-  payroll:      { read: true,  write: true,  modify: false, delete: false, print: true,  export: true,  approve: true  },
-  reports:      { read: true,  write: false, modify: false, delete: false, print: true,  export: true,  approve: false },
-  manufacturing:{ read: true,  write: true,  modify: true,  delete: false, print: true,  export: true,  approve: true  },
-  settings:     { read: true,  write: true,  modify: true,  delete: false, print: false, export: false, approve: false },
-}
+const none = (): Record<Perm, boolean> => ({ read: false, write: false, modify: false, delete: false, print: false, export: false, approve: false })
+const all = (): Record<Perm, boolean> => ({ read: true, write: true, modify: true, delete: true, print: true, export: true, approve: true })
+const viewOnly = (): Record<Perm, boolean> => ({ ...none(), read: true, print: true, export: true })
 
-type PermissionMatrix = Record<string, Record<Permission, boolean>>
+const EMPTY_USER = { name: '', email: '', phone: '', password: '', roleId: '', status: 'ACTIVE' as 'ACTIVE' | 'INACTIVE' }
+
+function initials(name: string) {
+  return String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
+}
 
 export default function UsersRolesPage() {
-  const [activeTab, setActiveTab] = useState<'users' | 'roles'>('users')
+  const [tab, setTab] = useState<'users' | 'roles'>('users')
   const [users, setUsers] = useState<any[]>([])
   const [roles, setRoles] = useState<any[]>([])
   const [companyModules, setCompanyModules] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
+  const [confirm, confirmDialog] = useConfirm()
 
-  // User modal
-  const [showUserModal, setShowUserModal] = useState(false)
   const [editingUser, setEditingUser] = useState<any>(null)
-  const [userForm, setUserForm] = useState({
-    name: '', email: '', phone: '',
-    password: '', roleId: '', status: 'ACTIVE',
-  })
+  const [showUser, setShowUser] = useState(false)
+  const [userForm, setUserForm] = useState(EMPTY_USER)
+  const [userErr, setUserErr] = useState('')
   const [savingUser, setSavingUser] = useState(false)
 
-  // Role modal
-  const [showRoleModal, setShowRoleModal] = useState(false)
   const [editingRole, setEditingRole] = useState<any>(null)
+  const [showRole, setShowRole] = useState(false)
   const [roleName, setRoleName] = useState('')
-  const [roleDescription, setRoleDescription] = useState('')
-  const [permMatrix, setPermMatrix] = useState<PermissionMatrix>({})
+  const [roleDesc, setRoleDesc] = useState('')
+  const [matrix, setMatrix] = useState<Matrix>({})
+  const [roleErr, setRoleErr] = useState('')
   const [savingRole, setSavingRole] = useState(false)
 
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    const cached = sessionStorage.getItem(`tenant_user_${sub}`)
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached)
-        setCompanyModules(parsed.moduleKeys || [])
-      } catch {}
-    }
-    fetchData(sub)
-  }, [])
-
-  function getApi(sub: string) {
-    return {
-      get: (url: string) => axios.get(`${process.env.NEXT_PUBLIC_API_URL}${url}`, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      post: (url: string, data: any) => axios.post(`${process.env.NEXT_PUBLIC_API_URL}${url}`, data, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      put: (url: string, data: any) => axios.put(`${process.env.NEXT_PUBLIC_API_URL}${url}`, data, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-      delete: (url: string) => axios.delete(`${process.env.NEXT_PUBLIC_API_URL}${url}`, { withCredentials: true, headers: { 'x-tenant-slug': sub } }),
-    }
-  }
-
-  async function fetchData(sub: string) {
+  const load = useCallback(async () => {
     try {
-      const [uRes, rRes] = await Promise.all([
-        getApi(sub).get('/erp/users/list'),
-        getApi(sub).get('/erp/users/roles'),
-      ])
-      setUsers(uRes.data.data)
-      setRoles(rRes.data.data)
-    } catch {
-      toast.error('Failed to load data')
+      const [u, r] = await Promise.all([tenantApi.get('/erp/users/list'), tenantApi.get('/erp/users/roles')])
+      setUsers(u.data.data || [])
+      setRoles(r.data.data || [])
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load users.'))
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    try {
+      const cached = sessionStorage.getItem(`tenant_user_${getTenantSlug()}`)
+      if (cached) setCompanyModules(JSON.parse(cached).moduleKeys || [])
+    } catch {}
+    load()
+  }, [load])
+
+  // Only modules this company has
+  const modules = ALL_MODULES.filter((m) => companyModules.length === 0 || companyModules.includes(m.key))
+
+  // ── Users ──
+  function openUser(u?: any) {
+    setEditingUser(u || null)
+    setUserErr('')
+    setUserForm(u ? { name: u.name, email: u.email, phone: u.phone || '', password: '', roleId: u.roleId || '', status: u.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE' } : { ...EMPTY_USER, roleId: roles[0]?.id || '' })
+    setShowUser(true)
   }
 
-  // ── PERMISSION MATRIX HELPERS ──────────────────────────
-  const availableModules = ALL_MODULES.filter((m) =>
-    companyModules.includes(m.key) || companyModules.length === 0
-  )
-
-  function buildEmptyMatrix(): PermissionMatrix {
-    const matrix: PermissionMatrix = {}
-    availableModules.forEach((mod) => {
-      matrix[mod.key] = DEFAULT_MODULE_PERMISSIONS[mod.key] || {
-        read: true, write: false, modify: false,
-        delete: false, print: false, export: false, approve: false,
-      }
-    })
-    return matrix
-  }
-
-  function togglePermission(moduleKey: string, perm: Permission) {
-    setPermMatrix((prev) => ({
-      ...prev,
-      [moduleKey]: {
-        ...prev[moduleKey],
-        [perm]: !prev[moduleKey]?.[perm],
-      },
-    }))
-  }
-
-  function toggleAllForModule(moduleKey: string, value: boolean) {
-    setPermMatrix((prev) => ({
-      ...prev,
-      [moduleKey]: Object.fromEntries(
-        PERMISSIONS.map((p) => [p, value])
-      ) as Record<Permission, boolean>,
-    }))
-  }
-
-  function toggleAllForPermission(perm: Permission, value: boolean) {
-    setPermMatrix((prev) => {
-      const updated = { ...prev }
-      availableModules.forEach((mod) => {
-        updated[mod.key] = { ...updated[mod.key], [perm]: value }
-      })
-      return updated
-    })
-  }
-
-  // ── USER HANDLERS ──────────────────────────────────────
-  function openCreateUser() {
-    setEditingUser(null)
-    setUserForm({ name: '', email: '', phone: '', password: '', roleId: '', status: 'ACTIVE' })
-    setShowUserModal(true)
-  }
-
-  function openEditUser(user: any) {
-    setEditingUser(user)
-    setUserForm({ name: user.name, email: user.email, phone: user.phone || '', password: '', roleId: user.roleId || '', status: user.status })
-    setShowUserModal(true)
-  }
-
-  async function handleSaveUser(e: React.FormEvent) {
-    e.preventDefault()
-    if (!userForm.name || !userForm.email) { toast.error('Name and email required'); return }
-    if (!editingUser && !userForm.password) { toast.error('Password required for new user'); return }
+  async function saveUser(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!userForm.name.trim()) return setUserErr('Enter their name.')
+    if (!editingUser && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userForm.email.trim())) return setUserErr('Enter a valid email address.')
+    if (!userForm.roleId) return setUserErr('Choose a role. It decides what they can see and do.')
+    if (!editingUser && userForm.password.length < 8) return setUserErr('The password must be at least 8 characters.')
+    if (editingUser && userForm.password && userForm.password.length < 8) return setUserErr('The new password must be at least 8 characters.')
+    setUserErr('')
     setSavingUser(true)
     try {
-      if (editingUser) {
-        await getApi(subdomain).put(`/erp/users/list/${editingUser.id}`, userForm)
-        toast.success('User updated')
-      } else {
-        await getApi(subdomain).post('/erp/users/list', userForm)
-        toast.success('User created')
-      }
-      setShowUserModal(false)
-      fetchData(subdomain)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to save user')
+      if (editingUser) await tenantApi.put(`/erp/users/list/${editingUser.id}`, userForm)
+      else await tenantApi.post('/erp/users/list', { ...userForm, email: userForm.email.trim() })
+      toast.success(editingUser ? 'Changes saved' : `${userForm.name.trim()} can now sign in`)
+      setShowUser(false)
+      load()
+    } catch (err) {
+      setUserErr(apiError(err, 'Could not save.'))
     } finally {
       setSavingUser(false)
     }
   }
 
-  async function handleDeleteUser(id: string) {
-    if (!confirm('Delete this user?')) return
+  async function deleteUser(u: any) {
+    const ok = await confirm({ title: `Remove ${u.name}?`, message: 'They will not be able to sign in. Their past activity stays in the activity log.', confirmLabel: 'Remove user', danger: true })
+    if (!ok) return
     try {
-      await getApi(subdomain).delete(`/erp/users/list/${id}`)
-      toast.success('User deleted')
-      fetchData(subdomain)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to delete user')
+      await tenantApi.delete(`/erp/users/list/${u.id}`)
+      toast.success(`${u.name} removed`)
+      load()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not remove the user.'))
     }
   }
 
-  // ── ROLE HANDLERS ──────────────────────────────────────
-  function openCreateRole() {
-    setEditingRole(null)
-    setRoleName('')
-    setRoleDescription('')
-    setPermMatrix(buildEmptyMatrix())
-    setShowRoleModal(true)
+  // ── Roles ──
+  function openRole(r?: any) {
+    setEditingRole(r || null)
+    setRoleErr('')
+    setRoleName(r?.name || '')
+    setRoleDesc(r?.description || '')
+    const m: Matrix = {}
+    for (const mod of modules) m[mod.key] = { ...none(), ...(r?.permissions?.[mod.key] || {}) }
+    setMatrix(m)
+    setShowRole(true)
   }
 
-  function openEditRole(role: any) {
-    setEditingRole(role)
-    setRoleName(role.name)
-    setRoleDescription(role.description || '')
-    // Load existing permissions or build defaults
-    const existing = role.permissions || {}
-    const matrix: PermissionMatrix = {}
-    availableModules.forEach((mod) => {
-      matrix[mod.key] = existing[mod.key] || DEFAULT_MODULE_PERMISSIONS[mod.key] || {
-        read: false, write: false, modify: false,
-        delete: false, print: false, export: false, approve: false,
-      }
+  const setRow = (key: string, v: Record<Perm, boolean>) => setMatrix((x) => ({ ...x, [key]: v }))
+  function toggle(key: string, p: Perm) {
+    setMatrix((x) => {
+      const row = { ...x[key], [p]: !x[key]?.[p] }
+      // Any other permission needs View; turning View off turns the rest off
+      if (p !== 'read' && row[p]) row.read = true
+      if (p === 'read' && !row.read) return { ...x, [key]: none() }
+      return { ...x, [key]: row }
     })
-    setPermMatrix(matrix)
-    setShowRoleModal(true)
   }
 
-  async function handleSaveRole(e: React.FormEvent) {
-    e.preventDefault()
-    if (!roleName) { toast.error('Role name required'); return }
-
-    // moduleKeys derived from modules where at least read=true
-    const moduleKeys = availableModules
-      .filter((mod) => permMatrix[mod.key]?.read)
-      .map((mod) => mod.key)
-
+  async function saveRole(e?: React.FormEvent) {
+    e?.preventDefault()
+    if (!roleName.trim()) return setRoleErr('Give the role a name, like Cashier or Store keeper.')
+    const moduleKeys = modules.filter((m) => matrix[m.key]?.read).map((m) => m.key)
+    if (!moduleKeys.length) return setRoleErr('Allow at least one area to be viewed.')
+    setRoleErr('')
     setSavingRole(true)
     try {
-      const payload = {
-        name: roleName,
-        description: roleDescription,
-        moduleKeys,
-        permissions: permMatrix,
-      }
-      if (editingRole) {
-        await getApi(subdomain).put(`/erp/users/roles/${editingRole.id}`, payload)
-        toast.success('Role updated')
-      } else {
-        await getApi(subdomain).post('/erp/users/roles', payload)
-        toast.success('Role created')
-      }
-      setShowRoleModal(false)
-      fetchData(subdomain)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to save role')
+      const body = { name: roleName.trim(), description: roleDesc.trim(), moduleKeys, permissions: matrix }
+      if (editingRole) await tenantApi.put(`/erp/users/roles/${editingRole.id}`, body)
+      else await tenantApi.post('/erp/users/roles', body)
+      toast.success(editingRole ? 'Role saved. Changes apply within a minute.' : `${body.name} role added`)
+      setShowRole(false)
+      load()
+    } catch (err) {
+      setRoleErr(apiError(err, 'Could not save the role.'))
     } finally {
       setSavingRole(false)
     }
   }
 
-  async function handleDeleteRole(id: string) {
-    if (!confirm('Delete this role?')) return
+  async function deleteRole(r: any) {
+    if (r.userCount > 0) return toast.error(`${r.userCount} user${r.userCount === 1 ? ' has' : 's have'} this role. Give them another role first.`)
+    const ok = await confirm({ title: `Delete the ${r.name} role?`, confirmLabel: 'Delete role', danger: true })
+    if (!ok) return
     try {
-      await getApi(subdomain).delete(`/erp/users/roles/${id}`)
-      toast.success('Role deleted')
-      fetchData(subdomain)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to delete role')
+      await tenantApi.delete(`/erp/users/roles/${r.id}`)
+      toast.success(`${r.name} deleted`)
+      load()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not delete the role.'))
     }
   }
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '10px 12px',
-    border: '1.5px solid #E2E8F0', borderRadius: '8px',
-    fontSize: '13px', outline: 'none',
-    fontFamily: 'Inter, sans-serif', background: '#fff',
-    boxSizing: 'border-box',
+  const accessSummary = (r: any) => {
+    const keys: string[] = r.moduleKeys || []
+    if (!keys.length) return 'No access yet'
+    const names = keys.map((k) => ALL_MODULES.find((m) => m.key === k)?.label || k)
+    return names.length > 4 ? `${names.slice(0, 4).join(', ')} and ${names.length - 4} more` : names.join(', ')
   }
 
   return (
     <TenantLayout
-      title="Users & Roles"
-      subtitle="Manage team members and permissions"
+      title="Users & roles"
+      subtitle="Who can sign in, and what each person can see and do"
       requiredModule="users"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px' }}>
-          {activeTab === 'users' ? (
-            <button onClick={openCreateUser} style={{ padding: '10px 18px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-              ➕ Add User
-            </button>
-          ) : (
-            <button onClick={openCreateRole} style={{ padding: '10px 18px', background: '#7C3AED', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-              ➕ Add Role
-            </button>
-          )}
-        </div>
+        tab === 'users'
+          ? <Button icon={<UserPlus className="size-4" />} onClick={() => openUser()}>Add user</Button>
+          : <Button icon={<Plus className="size-4" />} onClick={() => openRole()}>Add role</Button>
       }
     >
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', background: '#F1F5F9', padding: '4px', borderRadius: '10px', width: 'fit-content' }}>
-        {[{ key: 'users', label: '👥 Users' }, { key: 'roles', label: '🔐 Roles & Permissions' }].map((tab) => (
-          <button key={tab.key} onClick={() => setActiveTab(tab.key as any)} style={{
-            padding: '8px 24px', borderRadius: '8px', border: 'none',
-            background: activeTab === tab.key ? '#fff' : 'transparent',
-            color: activeTab === tab.key ? '#0F172A' : '#64748B',
-            fontSize: '13px', fontWeight: activeTab === tab.key ? 700 : 500,
-            cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-            boxShadow: activeTab === tab.key ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-          }}>{tab.label}</button>
-        ))}
-      </div>
-
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <>
-          {/* ── USERS TAB ── */}
-          {activeTab === 'users' && (
-            <>
-              {users.length === 0 ? (
-                <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '80px', textAlign: 'center' }}>
-                  <div style={{ fontSize: '48px', marginBottom: '12px' }}>👥</div>
-                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>No users yet</h3>
-                  <p style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '20px' }}>Add team members to give them ERP access</p>
-                  <button onClick={openCreateUser} style={{ padding: '10px 24px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>➕ Add First User</button>
-                </div>
-              ) : (
-                <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                        {['User', 'Email', 'Role', 'Status', 'Type', 'Actions'].map((h) => (
-                          <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {users.map((user, i) => (
-                        <tr key={user.id} style={{ borderBottom: i < users.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                          onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                          onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                        >
-                          <td style={{ padding: '14px 16px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                              <div style={{ width: '36px', height: '36px', borderRadius: '50%', background: user.isOwner ? '#FFF7ED' : '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px', fontWeight: 700, color: user.isOwner ? '#EA580C' : '#1D4ED8' }}>
-                                {user.name?.charAt(0)}
-                              </div>
-                              <div>
-                                <div style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{user.name}</div>
-                                <div style={{ fontSize: '11px', color: '#94A3B8' }}>{user.phone || ''}</div>
-                              </div>
-                            </div>
-                          </td>
-                          <td style={{ padding: '14px 16px', fontSize: '13px', color: '#64748B' }}>{user.email}</td>
-                          <td style={{ padding: '14px 16px' }}>
-                            {user.roleName ? (
-                              <span style={{ padding: '4px 10px', background: '#FAF5FF', color: '#7C3AED', borderRadius: '99px', fontSize: '12px', fontWeight: 600 }}>{user.roleName}</span>
-                            ) : <span style={{ fontSize: '12px', color: '#94A3B8' }}>—</span>}
-                          </td>
-                          <td style={{ padding: '14px 16px' }}>
-                            <span style={{ padding: '4px 10px', borderRadius: '99px', fontSize: '11px', fontWeight: 600, background: user.status === 'ACTIVE' ? '#F0FDF4' : '#FEF2F2', color: user.status === 'ACTIVE' ? '#16A34A' : '#DC2626', border: `1px solid ${user.status === 'ACTIVE' ? '#BBF7D0' : '#FECACA'}` }}>{user.status}</span>
-                          </td>
-                          <td style={{ padding: '14px 16px' }}>
-                            {user.isOwner
-                              ? <span style={{ padding: '4px 10px', background: '#FFF7ED', color: '#EA580C', borderRadius: '99px', fontSize: '11px', fontWeight: 700, border: '1px solid #FED7AA' }}>👑 Owner</span>
-                              : <span style={{ padding: '4px 10px', background: '#F1F5F9', color: '#64748B', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>Staff</span>
-                            }
-                          </td>
-                          <td style={{ padding: '14px 16px' }}>
-                            {!user.isOwner && (
-                              <div style={{ display: 'flex', gap: '6px' }}>
-                                <button onClick={() => openEditUser(user)} style={{ padding: '6px 12px', background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Edit</button>
-                                <button onClick={() => handleDeleteUser(user.id)} style={{ padding: '6px 12px', background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Delete</button>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* ── ROLES TAB ── */}
-          {activeTab === 'roles' && (
-            <>
-              {roles.length === 0 ? (
-                <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '80px', textAlign: 'center' }}>
-                  <div style={{ fontSize: '48px', marginBottom: '12px' }}>🔐</div>
-                  <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>No roles yet</h3>
-                  <p style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '20px' }}>Create roles to control what each team member can access</p>
-                  <button onClick={openCreateRole} style={{ padding: '10px 24px', background: '#7C3AED', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>➕ Create First Role</button>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  {roles.map((role) => {
-                    const perms = role.permissions || {}
-                    const enabledModules = availableModules.filter((m) => perms[m.key]?.read)
-                    return (
-                      <div key={role.id} style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-                        {/* Role Header */}
-                        <div style={{ padding: '16px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #F1F5F9', background: '#F8FAFC' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                            <div style={{ width: '38px', height: '38px', borderRadius: '10px', background: '#FAF5FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px' }}>🔐</div>
-                            <div>
-                              <div style={{ fontSize: '15px', fontWeight: 700, color: '#0F172A' }}>{role.name}</div>
-                              {role.description && <div style={{ fontSize: '12px', color: '#94A3B8' }}>{role.description}</div>}
-                            </div>
-                            <span style={{ padding: '4px 10px', background: '#FAF5FF', color: '#7C3AED', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>
-                              {role.userCount} users
-                            </span>
-                          </div>
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            <button onClick={() => openEditRole(role)} style={{ padding: '8px 16px', background: '#FAF5FF', color: '#7C3AED', border: '1px solid #E9D5FF', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>✏️ Edit Permissions</button>
-                            <button onClick={() => handleDeleteRole(role.id)} style={{ padding: '8px 12px', background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Delete</button>
+      <Card>
+        <Tabs tabs={[{ key: 'users', label: 'Users', count: users.length }, { key: 'roles', label: 'Roles', count: roles.length }]} value={tab} onChange={setTab} />
+        {loading ? (
+          <Spinner label="Loading" />
+        ) : tab === 'users' ? (
+          users.length === 0 ? (
+            <EmptyState icon={<Users />} title="No users yet" />
+          ) : (
+            <TableWrap>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>User</Th>
+                    <Th className="hidden sm:table-cell">Role</Th>
+                    <Th>Status</Th>
+                    <Th className="hidden lg:table-cell">Added</Th>
+                    <Th align="right"><span className="sr-only">Actions</span></Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((u) => (
+                    <Tr key={u.id}>
+                      <Td>
+                        <div className="flex items-center gap-3">
+                          <span className={cn('flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold', u.isOwner ? 'bg-nav text-white' : 'bg-brand-soft text-brand-ink')} aria-hidden>
+                            {initials(u.name)}
+                          </span>
+                          <div className="min-w-0">
+                            <p className="truncate font-medium">{u.name}</p>
+                            <p className="truncate text-xs text-ink-3">{u.email}</p>
+                            <p className="text-xs text-ink-3 sm:hidden">{u.isOwner ? 'Owner' : u.roleName || 'No role'}</p>
                           </div>
                         </div>
-
-                        {/* Permission Matrix Preview */}
-                        <div style={{ overflowX: 'auto' }}>
-                          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '700px' }}>
-                            <thead>
-                              <tr style={{ background: '#F8FAFC' }}>
-                                <th style={{ padding: '10px 16px', textAlign: 'left', fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase', width: '180px' }}>Module</th>
-                                {PERMISSIONS.map((p) => (
-                                  <th key={p} style={{ padding: '10px 12px', textAlign: 'center', fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase' }}>{PERM_LABELS[p]}</th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {enabledModules.map((mod, i) => (
-                                <tr key={mod.key} style={{ borderTop: '1px solid #F1F5F9' }}>
-                                  <td style={{ padding: '10px 16px', fontSize: '13px', fontWeight: 600, color: '#374151' }}>{mod.label}</td>
-                                  {PERMISSIONS.map((perm) => {
-                                    const has = perms[mod.key]?.[perm]
-                                    return (
-                                      <td key={perm} style={{ padding: '10px 12px', textAlign: 'center' }}>
-                                        <span style={{ fontSize: '14px', color: has ? '#16A34A' : '#E2E8F0' }}>
-                                          {has ? '✓' : '—'}
-                                        </span>
-                                      </td>
-                                    )
-                                  })}
-                                </tr>
-                              ))}
-                              {enabledModules.length === 0 && (
-                                <tr>
-                                  <td colSpan={8} style={{ padding: '20px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>No module access assigned</td>
-                                </tr>
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </>
-          )}
-        </>
-      )}
-
-      {/* ── USER MODAL ── */}
-      {showUserModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: '20px' }}>
-          <div style={{ background: '#fff', borderRadius: '20px', padding: '32px', width: '100%', maxWidth: '480px', boxShadow: '0 25px 60px rgba(0,0,0,0.15)' }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '24px' }}>
-              {editingUser ? '✏️ Edit User' : '➕ Add User'}
-            </h3>
-            <form onSubmit={handleSaveUser}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-                <div style={{ gridColumn: '1/-1' }}>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Full Name *</label>
-                  <input value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })} placeholder="e.g. Ahmed Khan" style={inputStyle} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Email *</label>
-                  <input type="email" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} placeholder="user@email.com" disabled={!!editingUser} style={{ ...inputStyle, background: editingUser ? '#F8FAFC' : '#fff' }} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Phone</label>
-                  <input value={userForm.phone} onChange={(e) => setUserForm({ ...userForm, phone: e.target.value })} placeholder="+92 300 0000000" style={inputStyle} />
-                </div>
-                <div style={{ gridColumn: '1/-1' }}>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>
-                    Password {editingUser && <span style={{ color: '#94A3B8', fontWeight: 400 }}>(leave blank to keep current)</span>}
-                  </label>
-                  <input type="password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} placeholder="Min 6 characters" style={inputStyle} />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Role</label>
-                  <select value={userForm.roleId} onChange={(e) => setUserForm({ ...userForm, roleId: e.target.value })} style={inputStyle}>
-                    <option value="">No Role</option>
-                    {roles.map((r: any) => <option key={r.id} value={r.id}>{r.name}</option>)}
-                  </select>
-                </div>
-                {editingUser && (
-                  <div>
-                    <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Status</label>
-                    <select value={userForm.status} onChange={(e) => setUserForm({ ...userForm, status: e.target.value })} style={inputStyle}>
-                      <option value="ACTIVE">Active</option>
-                      <option value="INACTIVE">Inactive</option>
-                    </select>
+                      </Td>
+                      <Td className="hidden sm:table-cell">
+                        {u.isOwner ? (
+                          <span className="inline-flex items-center gap-1.5 font-medium"><Crown className="size-3.5 text-warn" aria-hidden />Owner</span>
+                        ) : u.roleName ? (
+                          u.roleName
+                        ) : (
+                          <span className="text-bad">No role</span>
+                        )}
+                      </Td>
+                      <Td><StatusBadge status={u.status} /></Td>
+                      <Td className="hidden text-ink-2 lg:table-cell">{date(u.createdAt)}</Td>
+                      <Td align="right" className="whitespace-nowrap">
+                        {u.isOwner ? (
+                          <span className="text-xs text-ink-3">Full access</span>
+                        ) : (
+                          <>
+                            <IconAction label={`Edit ${u.name}`} onClick={() => openUser(u)}><Pencil /></IconAction>
+                            <IconAction label={`Remove ${u.name}`} onClick={() => deleteUser(u)} danger><Trash2 /></IconAction>
+                          </>
+                        )}
+                      </Td>
+                    </Tr>
+                  ))}
+                </tbody>
+              </Table>
+            </TableWrap>
+          )
+        ) : roles.length === 0 ? (
+          <EmptyState icon={<ShieldCheck />} title="No roles yet" description="A role is a set of permissions, like Cashier or Store keeper. Give one to each user." action={<Button icon={<Plus className="size-4" />} onClick={() => openRole()}>Add role</Button>} />
+        ) : (
+          <div className="grid grid-cols-1 gap-3 p-4 sm:p-5 md:grid-cols-2 xl:grid-cols-3">
+            {roles.map((r) => (
+              <div key={r.id} className="flex flex-col rounded-[var(--radius-control)] border border-line p-4">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-ink">{r.name}</p>
+                    {r.description && <p className="mt-0.5 text-[13px] text-ink-3">{r.description}</p>}
                   </div>
-                )}
+                  <Badge>{r.userCount} user{r.userCount === 1 ? '' : 's'}</Badge>
+                </div>
+                <p className="mt-3 flex-1 text-[13px] text-ink-2">{accessSummary(r)}</p>
+                <div className="mt-3 flex gap-2 border-t border-line pt-3">
+                  <Button size="sm" variant="secondary" icon={<KeyRound className="size-3.5" />} onClick={() => openRole(r)}>Permissions</Button>
+                  <Button size="sm" variant="ghost" className="ml-auto text-bad hover:text-bad" icon={<Trash2 className="size-3.5" />} onClick={() => deleteRole(r)}>Delete</Button>
+                </div>
               </div>
-              <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-                <button type="button" onClick={() => setShowUserModal(false)} style={{ flex: 1, padding: '12px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-                <button type="submit" disabled={savingUser} style={{ flex: 1, padding: '12px', background: savingUser ? '#94A3B8' : '#1E3A5F', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: savingUser ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                  {savingUser ? 'Saving...' : editingUser ? 'Update' : 'Create'}
-                </button>
-              </div>
-            </form>
+            ))}
           </div>
-        </div>
-      )}
+        )}
+      </Card>
 
-      {/* ── ROLE MODAL (Permission Matrix) ── */}
-      {showRoleModal && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 200, padding: '20px' }}>
-          <div style={{ background: '#fff', borderRadius: '20px', padding: '0', width: '100%', maxWidth: '900px', maxHeight: '92vh', display: 'flex', flexDirection: 'column', boxShadow: '0 25px 60px rgba(0,0,0,0.2)' }}>
-
-            {/* Modal Header */}
-            <div style={{ padding: '24px 32px', borderBottom: '1px solid #E2E8F0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A' }}>
-                {editingRole ? '✏️ Edit Role Permissions' : '➕ Create Role'}
-              </h3>
-              <button onClick={() => setShowRoleModal(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#94A3B8' }}>×</button>
+      {/* User */}
+      <Modal
+        open={showUser}
+        onClose={() => setShowUser(false)}
+        title={editingUser ? `Edit ${editingUser.name}` : 'Add user'}
+        description={editingUser ? editingUser.email : 'They sign in with this email and password on your company login page.'}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowUser(false)}>Cancel</Button>
+            <Button onClick={() => saveUser()} loading={savingUser}>{editingUser ? 'Save changes' : 'Add user'}</Button>
+          </>
+        }
+      >
+        <form onSubmit={saveUser} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Full name" required className="sm:col-span-2">{(id) => <Input id={id} value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })} autoFocus />}</Field>
+          {!editingUser && (
+            <Field label="Email" required className="sm:col-span-2">{(id) => <Input id={id} type="email" autoComplete="off" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} />}</Field>
+          )}
+          <Field label="Phone">{(id) => <Input id={id} type="tel" value={userForm.phone} onChange={(e) => setUserForm({ ...userForm, phone: e.target.value })} />}</Field>
+          <Field label="Role" required>
+            {(id) => (
+              <Select id={id} value={userForm.roleId} onChange={(e) => setUserForm({ ...userForm, roleId: e.target.value })}>
+                <option value="">Choose role</option>
+                {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </Select>
+            )}
+          </Field>
+          <Field label={editingUser ? 'New password' : 'Password'} required={!editingUser} hint={editingUser ? 'Leave empty to keep their current password' : 'At least 8 characters. Share it with them privately.'} className="sm:col-span-2">
+            {(id) => <Input id={id} type="password" autoComplete="new-password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} />}
+          </Field>
+          {editingUser && (
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
+              <span className="text-[13px] font-medium text-ink-2">Status</span>
+              <Segmented label="Status" options={[{ key: 'ACTIVE', label: 'Can sign in' }, { key: 'INACTIVE', label: 'Blocked' }]} value={userForm.status} onChange={(v) => setUserForm({ ...userForm, status: v })} />
             </div>
+          )}
+          {userErr && <p className="rounded-[var(--radius-control)] bg-bad-soft px-3 py-2 text-[13px] text-bad sm:col-span-2">{userErr}</p>}
+          <button type="submit" className="hidden" />
+        </form>
+      </Modal>
 
-            {/* Role Name + Description */}
-            <div style={{ padding: '20px 32px', borderBottom: '1px solid #F1F5F9', display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '16px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Role Name *</label>
-                <input value={roleName} onChange={(e) => setRoleName(e.target.value)} placeholder="e.g. Accountant" style={inputStyle} />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '5px' }}>Description</label>
-                <input value={roleDescription} onChange={(e) => setRoleDescription(e.target.value)} placeholder="What does this role do?" style={inputStyle} />
-              </div>
-            </div>
-
-            {/* Permission Matrix */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '0 32px' }}>
-              <div style={{ overflowX: 'auto' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: '700px' }}>
-                  <thead style={{ position: 'sticky', top: 0, zIndex: 10 }}>
-                    <tr style={{ background: '#1E3A5F' }}>
-                      <th style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 700, color: '#fff', width: '200px' }}>Module / Page</th>
-                      {PERMISSIONS.map((p) => (
-                        <th key={p} style={{ padding: '12px 8px', textAlign: 'center', fontSize: '11px', fontWeight: 700, color: '#fff' }}>
-                          <div>{PERM_LABELS[p]}</div>
-                          <div style={{ display: 'flex', justifyContent: 'center', gap: '4px', marginTop: '4px' }}>
-                            <button type="button" onClick={() => toggleAllForPermission(p, true)} style={{ fontSize: '9px', padding: '1px 4px', background: '#16A34A', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer' }}>All</button>
-                            <button type="button" onClick={() => toggleAllForPermission(p, false)} style={{ fontSize: '9px', padding: '1px 4px', background: '#DC2626', color: '#fff', border: 'none', borderRadius: '3px', cursor: 'pointer' }}>None</button>
-                          </div>
-                        </th>
+      {/* Role */}
+      <Modal
+        open={showRole}
+        onClose={() => setShowRole(false)}
+        size="xl"
+        title={editingRole ? `Permissions: ${editingRole.name}` : 'Add role'}
+        description="Tick what people with this role may do in each area."
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowRole(false)}>Cancel</Button>
+            <Button onClick={() => saveRole()} loading={savingRole}>{editingRole ? 'Save role' : 'Add role'}</Button>
+          </>
+        }
+      >
+        <form onSubmit={saveRole} className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <Field label="Role name" required>{(id) => <Input id={id} value={roleName} onChange={(e) => setRoleName(e.target.value)} placeholder="e.g. Cashier" autoFocus />}</Field>
+            <Field label="Description">{(id) => <Input id={id} value={roleDesc} onChange={(e) => setRoleDesc(e.target.value)} placeholder="What this person does" />}</Field>
+          </div>
+          <div className="overflow-x-auto rounded-[var(--radius-control)] border border-line">
+            <table className="w-full min-w-[720px] border-collapse text-sm">
+              <thead>
+                <tr className="bg-subtle">
+                  <th scope="col" className="border-b border-line px-3 py-2 text-left text-[13px] font-semibold text-ink-2">Area</th>
+                  {PERMS.map((p) => (
+                    <th key={p} scope="col" title={PERM_LABEL[p].long} className="border-b border-line px-1 py-2 text-center text-[13px] font-semibold text-ink-2">{PERM_LABEL[p].short}</th>
+                  ))}
+                  <th scope="col" className="border-b border-line px-3 py-2 text-right text-[13px] font-semibold text-ink-2">Quick set</th>
+                </tr>
+              </thead>
+              <tbody>
+                {modules.map((m) => {
+                  const row = matrix[m.key] || none()
+                  return (
+                    <tr key={m.key} className={cn('border-b border-line last:border-b-0', !row.read && 'text-ink-3')}>
+                      <th scope="row" className="px-3 py-2 text-left font-medium">{m.label}</th>
+                      {PERMS.map((p) => (
+                        <td key={p} className="px-1 py-2 text-center">
+                          <input
+                            type="checkbox"
+                            aria-label={`${m.label}: ${PERM_LABEL[p].long}`}
+                            checked={!!row[p]}
+                            onChange={() => toggle(m.key, p)}
+                            className="size-4 cursor-pointer accent-[var(--color-brand)]"
+                          />
+                        </td>
                       ))}
+                      <td className="px-3 py-1.5 text-right whitespace-nowrap">
+                        <button type="button" className="rounded px-1.5 py-1 text-xs text-ink-2 hover:bg-subtle hover:text-ink" onClick={() => setRow(m.key, all())}>All</button>
+                        <button type="button" className="rounded px-1.5 py-1 text-xs text-ink-2 hover:bg-subtle hover:text-ink" onClick={() => setRow(m.key, viewOnly())}>View only</button>
+                        <button type="button" className="rounded px-1.5 py-1 text-xs text-ink-2 hover:bg-subtle hover:text-ink" onClick={() => setRow(m.key, none())}>None</button>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {availableModules.map((mod, i) => {
-                      const modPerms = permMatrix[mod.key] || {}
-                      const allEnabled = PERMISSIONS.every((p) => modPerms[p])
-                      const noneEnabled = PERMISSIONS.every((p) => !modPerms[p])
-                      return (
-                        <tr key={mod.key} style={{ background: i % 2 === 0 ? '#fff' : '#F8FAFC', borderBottom: '1px solid #F1F5F9' }}>
-                          <td style={{ padding: '12px 16px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <span style={{ fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>{mod.label}</span>
-                              <div style={{ display: 'flex', gap: '3px', marginLeft: 'auto' }}>
-                                <button type="button" onClick={() => toggleAllForModule(mod.key, true)} style={{ fontSize: '9px', padding: '1px 5px', background: '#F0FDF4', color: '#16A34A', border: '1px solid #BBF7D0', borderRadius: '3px', cursor: 'pointer' }}>All</button>
-                                <button type="button" onClick={() => toggleAllForModule(mod.key, false)} style={{ fontSize: '9px', padding: '1px 5px', background: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA', borderRadius: '3px', cursor: 'pointer' }}>None</button>
-                              </div>
-                            </div>
-                          </td>
-                          {PERMISSIONS.map((perm) => {
-                            const checked = !!modPerms[perm]
-                            return (
-                              <td key={perm} style={{ padding: '12px 8px', textAlign: 'center' }}>
-                                <button
-                                  type="button"
-                                  onClick={() => togglePermission(mod.key, perm)}
-                                  style={{
-                                    width: '28px', height: '28px', borderRadius: '6px',
-                                    border: `2px solid ${checked ? '#7C3AED' : '#E2E8F0'}`,
-                                    background: checked ? '#7C3AED' : 'transparent',
-                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                                    cursor: 'pointer', margin: '0 auto',
-                                    fontSize: '14px', color: '#fff',
-                                  }}
-                                >
-                                  {checked ? '✓' : ''}
-                                </button>
-                              </td>
-                            )
-                          })}
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div style={{ padding: '20px 32px', borderTop: '1px solid #E2E8F0', display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-              <button type="button" onClick={() => setShowRoleModal(false)} style={{ padding: '12px 24px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Cancel</button>
-              <button onClick={handleSaveRole} disabled={savingRole} style={{ padding: '12px 32px', background: savingRole ? '#94A3B8' : '#7C3AED', color: '#fff', border: 'none', borderRadius: '10px', fontSize: '14px', fontWeight: 600, cursor: savingRole ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                {savingRole ? 'Saving...' : editingRole ? '💾 Update Role' : '🔐 Create Role'}
-              </button>
-            </div>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
-        </div>
-      )}
-
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          <p className="text-xs text-ink-3">Dashboard is open to everyone. Users &amp; roles can only be managed by the owner.</p>
+          {roleErr && <p className="rounded-[var(--radius-control)] bg-bad-soft px-3 py-2 text-[13px] text-bad">{roleErr}</p>}
+          <button type="submit" className="hidden" />
+        </form>
+      </Modal>
+      {confirmDialog}
     </TenantLayout>
   )
 }

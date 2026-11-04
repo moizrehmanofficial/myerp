@@ -1,24 +1,102 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+/* IBM Plex Sans — self-hosted (no Google Fonts request, works offline) */
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource/ibm-plex-sans/700.css";
 @import "tailwindcss";
 
+/* ── MyERP design tokens ─────────────────────────────────────
+   One palette for the whole product. Use these names in Tailwind
+   classes, e.g. bg-surface, text-ink, border-line, bg-brand.        */
 @theme {
-  --color-primary: #1E3A5F;
-  --color-secondary: #2E86AB;
-  --font-sans: 'Inter', sans-serif;
+  --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+
+  /* Navigation (sidebar) */
+  --color-nav: #16263f;
+  --color-nav-hover: #1f3352;
+  --color-nav-active: #24395b;
+  --color-nav-text: #c3cddb;
+  --color-nav-muted: #7f8ea5;
+
+  /* Surfaces */
+  --color-canvas: #f4f6f8; /* page background */
+  --color-surface: #ffffff; /* panels, tables, forms */
+  --color-subtle: #f8fafb; /* table headers, read-only areas */
+  --color-line: #e2e6eb; /* borders */
+  --color-line-strong: #cbd2da;
+
+  /* Text */
+  --color-ink: #1b2533; /* main text */
+  --color-ink-2: #4a5566; /* secondary text */
+  --color-ink-3: #7b8594; /* hints, placeholders */
+
+  /* Brand: ledger teal (primary actions, active states) */
+  --color-brand: #0f766e;
+  --color-brand-hover: #0c5f58;
+  --color-brand-soft: #e6f3f1;
+  --color-brand-ink: #0b4f4a;
+
+  /* Status */
+  --color-good: #067647;
+  --color-good-soft: #e7f5ee;
+  --color-warn: #b54708;
+  --color-warn-soft: #fdf2e3;
+  --color-bad: #b42318;
+  --color-bad-soft: #fdecea;
+  --color-info: #1d5fa8;
+  --color-info-soft: #e8f0fa;
+
+  --radius-control: 8px;
+  --radius-panel: 12px;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
-html, body {
+html,
+body {
   height: 100%;
-  font-family: 'Inter', sans-serif;
-  -webkit-font-smoothing: antialiased;
 }
 
-::-webkit-scrollbar { width: 5px; }
-::-webkit-scrollbar-track { background: #f1f5f9; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; }
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Money and quantities line up in columns */
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Visible keyboard focus everywhere */
+:focus-visible {
+  outline: 2px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+/* Thin scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line-strong) transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Printing: white page, no app chrome (sidebar/topbar use print:hidden) */
+@media print {
+  body {
+    background: #fff;
+  }
+  @page {
+    margin: 12mm;
+  }
+}

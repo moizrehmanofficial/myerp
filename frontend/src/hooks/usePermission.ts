@@ -1,20 +1,25 @@
 'use client'
 
+import { useSyncExternalStore } from 'react'
 import { getTenantSlug } from '@/lib/getTenantSlug'
 
 export type PermissionAction = 'read' | 'write' | 'modify' | 'delete' | 'print' | 'export' | 'approve'
 
+// Reads the signed-in user from sessionStorage after hydration, so the
+// server render and the first browser render match (no hydration warning).
+const noop = () => () => {}
+
 export function usePermission() {
+  const raw = useSyncExternalStore(
+    noop,
+    () => sessionStorage.getItem(`tenant_user_${getTenantSlug()}`),
+    () => null,
+  )
+
   function getPermissions(moduleKey: string): Record<PermissionAction, boolean> {
-    if (typeof window === 'undefined') return getEmpty()
-
-    const sub = getTenantSlug()
-
-    const cached = sessionStorage.getItem(`tenant_user_${sub}`)
-    if (!cached) return getEmpty()
-
+    if (!raw) return getEmpty()
     try {
-      const user = JSON.parse(cached)
+      const user = JSON.parse(raw)
       if (user.isOwner) return getFull()
       return user.permissions?.[moduleKey] || getEmpty()
     } catch {

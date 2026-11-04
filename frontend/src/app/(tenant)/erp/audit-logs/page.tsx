@@ -1,239 +1,182 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { History, Monitor, Smartphone } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import Pagination from '@/components/common/Pagination'
+import { Badge, Button, Card, Field, Input, Select, Spinner, Table, TableWrap, Th, Td, Tr, EmptyState } from '@/components/ui'
+import { tenantApi, apiError } from '@/lib/tenantApi'
 
-const MODULES = ['contacts', 'products', 'inventory', 'purchase', 'sales', 'invoices', 'finance', 'hr', 'payroll', 'users', 'auth', 'manufacturing', 'settings']
-const ACTIONS = ['CREATED', 'UPDATED', 'DELETED', 'LOGIN', 'EXPORTED', 'APPROVED']
+const MODULES: [string, string][] = [
+  ['auth', 'Sign in / out'], ['contacts', 'Customers & suppliers'], ['products', 'Products'], ['inventory', 'Stock'],
+  ['purchase', 'Purchases'], ['sales', 'Sales'], ['invoices', 'Invoices'], ['finance', 'Accounts'], ['hr', 'HR'],
+  ['payroll', 'Payroll'], ['manufacturing', 'Manufacturing'], ['users', 'Users & roles'], ['settings', 'Settings'],
+]
+const ACTIONS: [string, string, 'good' | 'info' | 'bad' | 'brand' | 'warn' | 'neutral'][] = [
+  ['CREATED', 'Added', 'good'], ['UPDATED', 'Changed', 'info'], ['DELETED', 'Deleted', 'bad'], ['APPROVED', 'Approved', 'good'],
+  ['LOGIN', 'Signed in', 'brand'], ['LOGOUT', 'Signed out', 'neutral'], ['LOGIN_FAILED', 'Failed sign-in', 'warn'], ['EXPORTED', 'Exported', 'neutral'],
+]
+const actionOf = (a: string) => ACTIONS.find((x) => x[0] === a)
+const moduleLabel = (m: string) => MODULES.find((x) => x[0] === m)?.[1] || m
 
-const ACTION_STYLES: Record<string, { bg: string; color: string }> = {
-  CREATED:  { bg: '#F0FDF4', color: '#16A34A' },
-  UPDATED:  { bg: '#EFF6FF', color: '#1D4ED8' },
-  DELETED:  { bg: '#FEF2F2', color: '#DC2626' },
-  LOGIN:    { bg: '#FAF5FF', color: '#7C3AED' },
-  EXPORTED: { bg: '#FFF7ED', color: '#EA580C' },
-  APPROVED: { bg: '#F0FDF4', color: '#16A34A' },
+function when(v: string) {
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return { day: '—', time: '' }
+  return {
+    day: d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+    time: d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+  }
 }
 
-export default function AuditLogPage() {
-  const [logs, setLogs] = useState<any[]>([])
-  const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
-  const [page, setPage] = useState(1)
+const EMPTY = { module: '', action: '', from: '', to: '' }
+
+export default function AuditLogsPage() {
+  const [rows, setRows] = useState<any[]>([])
   const [meta, setMeta] = useState<any>(null)
+  const [loading, setLoading] = useState(true)
+  const [page, setPage] = useState(1)
+  const [limit, setLimit] = useState(50)
+  const [draft, setDraft] = useState(EMPTY)
+  const [filters, setFilters] = useState(EMPTY)
 
-  const today = new Date().toISOString().split('T')[0]
-  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
-
-  const [filters, setFilters] = useState({
-    module: '',
-    action: '',
-    from: monthAgo,
-    to: today,
-  })
-
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchLogs(sub, 1, filters)
-  }, [])
-
-  async function fetchLogs(sub: string, p: number, f: typeof filters) {
+  const load = useCallback(async (p: number, l: number, f: typeof EMPTY) => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({
-        page: String(p),
-        limit: '50',
-        ...(f.module && { module: f.module }),
-        ...(f.action && { action: f.action }),
-        ...(f.from && { from: f.from }),
-        ...(f.to && { to: f.to + 'T23:59:59' }),
-      })
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/audit-logs?${params}`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
-      setLogs(res.data.data)
+      const q = new URLSearchParams({ page: String(p), limit: String(l) })
+      if (f.module) q.set('module', f.module)
+      if (f.action) q.set('action', f.action)
+      if (f.from) q.set('from', f.from)
+      if (f.to) q.set('to', `${f.to}T23:59:59`)
+      const res = await tenantApi.get(`/erp/audit-logs?${q}`)
+      setRows(res.data.data || [])
       setMeta(res.data.meta)
-      setPage(p)
-    } catch {
-      toast.error('Failed to load audit logs')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load the activity log.'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  function handleFilter() {
-    fetchLogs(subdomain, 1, filters)
-  }
+  useEffect(() => {
+    load(page, limit, filters)
+  }, [load, page, limit, filters])
 
-  function getActionStyle(action: string) {
-    return ACTION_STYLES[action] || { bg: '#F1F5F9', color: '#64748B' }
-  }
+  const filtered = Object.values(filters).some(Boolean)
 
   return (
     <TenantLayout
-      title="Audit Log"
-      subtitle="Complete record of all system activities"
+      title="Activity log"
+      subtitle="Who did what, and when"
       requiredModule="settings"
       headerRight={
         <ExportButton
-          data={logs}
-          filename={`audit-log-${filters.from}-${filters.to}`}
-          title="Audit Log Report"
-          subtitle={`Period: ${filters.from} to ${filters.to}`}
+          data={rows}
+          filename="activity-log"
+          title="Activity log"
+          subtitle={new Date().toLocaleDateString('en-GB')}
           columns={[
-            { header: 'Date', value: (r) => new Date(r.createdAt).toLocaleString(), width: 22 },
-            { header: 'User', value: (r) => r.details?.userName || 'System', width: 20 },
-            { header: 'Action', value: (r) => r.action, width: 12 },
-            { header: 'Module', value: (r) => r.module, width: 15 },
-            { header: 'Description', value: (r) => r.details?.description || '', width: 40 },
-            { header: 'IP Address', value: (r) => r.ipAddress || '', width: 15 },
+            { header: 'Date', value: (r: any) => `${when(r.createdAt).day} ${when(r.createdAt).time}`, width: 18 },
+            { header: 'User', value: (r: any) => r.details?.userName || '', width: 18 },
+            { header: 'Action', value: (r: any) => actionOf(r.action)?.[1] || r.action, width: 14 },
+            { header: 'Area', value: (r: any) => moduleLabel(r.module), width: 18 },
+            { header: 'What happened', value: (r: any) => r.details?.description || '', width: 40 },
+            { header: 'IP', value: (r: any) => r.ipAddress || '', width: 14 },
           ]}
-          disabled={logs.length === 0}
         />
       }
     >
-      {/* Filters */}
-      <div style={{ background: '#fff', borderRadius: '14px', border: '1px solid #E2E8F0', padding: '16px 20px', marginBottom: '20px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-end' }}>
-        <div>
-          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase' }}>From</label>
-          <input type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-        </div>
-        <div>
-          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase' }}>To</label>
-          <input type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-        </div>
-        <div>
-          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase' }}>Module</label>
-          <select value={filters.module} onChange={(e) => setFilters({ ...filters, module: e.target.value })} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
-            <option value="">All Modules</option>
-            {MODULES.map((m) => <option key={m} value={m}>{m}</option>)}
-          </select>
-        </div>
-        <div>
-          <label style={{ display: 'block', fontSize: '11px', fontWeight: 600, color: '#64748B', marginBottom: '4px', textTransform: 'uppercase' }}>Action</label>
-          <select value={filters.action} onChange={(e) => setFilters({ ...filters, action: e.target.value })} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
-            <option value="">All Actions</option>
-            {ACTIONS.map((a) => <option key={a} value={a}>{a}</option>)}
-          </select>
-        </div>
-        <button onClick={handleFilter} style={{ padding: '9px 20px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-          🔍 Apply Filter
-        </button>
-        {meta && (
-          <div style={{ marginLeft: 'auto', fontSize: '13px', color: '#64748B' }}>
-            <strong style={{ color: '#0F172A' }}>{meta.total}</strong> total records
-          </div>
-        )}
-      </div>
-
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : logs.length === 0 ? (
-        <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '60px', textAlign: 'center' }}>
-          <div style={{ fontSize: '40px', marginBottom: '12px' }}>📋</div>
-          <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>No audit logs found</h3>
-          <p style={{ fontSize: '14px', color: '#94A3B8' }}>Activities will appear here as users interact with the system</p>
-        </div>
-      ) : (
-        <>
-          <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                  {['Date & Time', 'User', 'Action', 'Module', 'Description', 'IP Address'].map((h) => (
-                    <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {logs.map((log: any, i: number) => {
-                  const as = getActionStyle(log.action)
-                  return (
-                    <tr key={log.id} style={{ borderBottom: i < logs.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                    >
-                      <td style={{ padding: '12px 16px' }}>
-                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>
-                          {new Date(log.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
-                        </div>
-                        <div style={{ fontSize: '11px', color: '#94A3B8' }}>
-                          {new Date(log.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                        </div>
-                      </td>
-                      <td style={{ padding: '12px 16px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <div style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, color: '#1D4ED8' }}>
-                            {(log.details?.userName || 'S')?.charAt(0)}
-                          </div>
-                          <span style={{ fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>
-                            {log.details?.userName || 'System'}
-                          </span>
-                        </div>
-                      </td>
-                      <td style={{ padding: '12px 16px' }}>
-                        <span style={{ padding: '4px 10px', borderRadius: '99px', fontSize: '11px', fontWeight: 700, background: as.bg, color: as.color }}>
-                          {log.action}
-                        </span>
-                      </td>
-                      <td style={{ padding: '12px 16px' }}>
-                        <span style={{ fontFamily: 'monospace', fontSize: '12px', fontWeight: 600, color: '#7C3AED', background: '#FAF5FF', padding: '2px 8px', borderRadius: '6px' }}>
-                          {log.module}
-                        </span>
-                      </td>
-                      <td style={{ padding: '12px 16px', fontSize: '13px', color: '#374151' }}>
-                        {log.details?.description || '—'}
-                      </td>
-                      <td style={{ padding: '12px 16px', fontSize: '12px', color: '#94A3B8', fontFamily: 'monospace' }}>
-                        {log.ipAddress || '—'}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Pagination */}
-          {meta && meta.totalPages > 1 && (
-            <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '8px', marginTop: '20px' }}>
-              <button
-                onClick={() => fetchLogs(subdomain, page - 1, filters)}
-                disabled={page === 1}
-                style={{ padding: '8px 16px', background: page === 1 ? '#F1F5F9' : '#fff', color: page === 1 ? '#CBD5E1' : '#374151', border: '1px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: page === 1 ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}
-              >← Prev</button>
-
-              {Array.from({ length: Math.min(5, meta.totalPages) }, (_, i) => {
-                const p = Math.max(1, page - 2) + i
-                if (p > meta.totalPages) return null
-                return (
-                  <button key={p} onClick={() => fetchLogs(subdomain, p, filters)} style={{ padding: '8px 14px', background: p === page ? '#1E3A5F' : '#fff', color: p === page ? '#fff' : '#374151', border: `1px solid ${p === page ? '#1E3A5F' : '#E2E8F0'}`, borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>{p}</button>
-                )
-              })}
-
-              <button
-                onClick={() => fetchLogs(subdomain, page + 1, filters)}
-                disabled={page === meta.totalPages}
-                style={{ padding: '8px 16px', background: page === meta.totalPages ? '#F1F5F9' : '#fff', color: page === meta.totalPages ? '#CBD5E1' : '#374151', border: '1px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: page === meta.totalPages ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}
-              >Next →</button>
-
-              <span style={{ fontSize: '13px', color: '#64748B', marginLeft: '8px' }}>
-                Page {page} of {meta.totalPages}
-              </span>
+      <div className="flex flex-col gap-5">
+        <Card className="p-4 sm:p-5">
+          <form
+            className="grid grid-cols-2 gap-3 md:flex md:flex-wrap md:items-end"
+            onSubmit={(e) => {
+              e.preventDefault()
+              setPage(1)
+              setFilters(draft)
+            }}
+          >
+            <Field label="Area" className="col-span-2 md:w-52">
+              {(id) => (
+                <Select id={id} value={draft.module} onChange={(e) => setDraft({ ...draft, module: e.target.value })}>
+                  <option value="">Everything</option>
+                  {MODULES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                </Select>
+              )}
+            </Field>
+            <Field label="Action" className="col-span-2 md:w-44">
+              {(id) => (
+                <Select id={id} value={draft.action} onChange={(e) => setDraft({ ...draft, action: e.target.value })}>
+                  <option value="">Any</option>
+                  {ACTIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                </Select>
+              )}
+            </Field>
+            <Field label="From">{(id) => <Input id={id} type="date" value={draft.from} onChange={(e) => setDraft({ ...draft, from: e.target.value })} />}</Field>
+            <Field label="To">{(id) => <Input id={id} type="date" value={draft.to} onChange={(e) => setDraft({ ...draft, to: e.target.value })} />}</Field>
+            <div className="col-span-2 flex gap-2">
+              <Button type="submit" variant="secondary">Show</Button>
+              {filtered && <Button variant="ghost" onClick={() => { setDraft(EMPTY); setPage(1); setFilters(EMPTY) }}>Clear</Button>}
             </div>
-          )}
-        </>
-      )}
+          </form>
+        </Card>
 
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        <Card>
+          {loading ? (
+            <Spinner label="Loading activity" />
+          ) : rows.length === 0 ? (
+            <EmptyState icon={<History />} title={filtered ? 'Nothing matches these filters' : 'No activity yet'} />
+          ) : (
+            <>
+              <TableWrap>
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th className="w-32">When</Th>
+                      <Th>What happened</Th>
+                      <Th className="hidden md:table-cell">Who</Th>
+                      <Th className="hidden lg:table-cell">Device</Th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => {
+                      const a = actionOf(r.action)
+                      const w = when(r.createdAt)
+                      const mobile = /android|iphone|ipad|mobile/i.test(`${r.device || ''}`)
+                      return (
+                        <Tr key={r.id}>
+                          <Td className="align-top whitespace-nowrap">
+                            <p className="text-ink">{w.day}</p>
+                            <p className="num text-xs text-ink-3">{w.time}</p>
+                          </Td>
+                          <Td className="align-top">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <Badge tone={a?.[2] || 'neutral'}>{a?.[1] || r.action}</Badge>
+                              <span className="text-xs text-ink-3">{moduleLabel(r.module)}</span>
+                            </div>
+                            <p className="mt-1 text-ink">{r.details?.description || '—'}</p>
+                            <p className="mt-0.5 text-xs text-ink-3 md:hidden">{r.details?.userName || 'Unknown user'}</p>
+                          </Td>
+                          <Td className="hidden align-top md:table-cell">{r.details?.userName || <span className="text-ink-3">Unknown</span>}</Td>
+                          <Td className="hidden align-top lg:table-cell">
+                            <p className="flex items-center gap-1.5 text-ink-2">
+                              {mobile ? <Smartphone className="size-3.5 text-ink-3" aria-hidden /> : <Monitor className="size-3.5 text-ink-3" aria-hidden />}
+                              {[r.browser, r.device].filter(Boolean).join(' on ') || '—'}
+                            </p>
+                            {r.ipAddress && <p className="num text-xs text-ink-3">{r.ipAddress}</p>}
+                          </Td>
+                        </Tr>
+                      )
+                    })}
+                  </tbody>
+                </Table>
+              </TableWrap>
+              {meta && <Pagination page={page} totalPages={meta.totalPages || 1} total={meta.total || 0} limit={limit} onPageChange={setPage} onLimitChange={(l) => { setPage(1); setLimit(l) }} />}
+            </>
+          )}
+        </Card>
+      </div>
     </TenantLayout>
   )
 }

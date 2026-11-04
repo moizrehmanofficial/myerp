@@ -19,8 +19,9 @@ export class AuthService {
 
   async superAdminLogin(dto: LoginDto, res: any) {
     // ── Find Super Admin ───────────────────────────────
-    const admin = await this.prisma.superAdmin.findUnique({
-      where: { email: dto.email },
+    // Case-insensitive, so "Admin@x.com" and "admin@x.com" are the same login
+    const admin = await this.prisma.superAdmin.findFirst({
+      where: { email: { equals: String(dto.email || '').trim(), mode: 'insensitive' } },
     });
 
     if (!admin) {

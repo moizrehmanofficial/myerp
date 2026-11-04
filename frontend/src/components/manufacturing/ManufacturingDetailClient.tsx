@@ -1,231 +1,215 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import axios from 'axios'
 import toast from 'react-hot-toast'
+import { ArrowLeft, Check, CircleAlert, Factory, Play, Printer, RotateCcw, Trash2, X } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import { Badge, Button, Card, CardHeader, Spinner, Table, TableWrap, Th, Td, Tr, EmptyState, buttonStyles, useConfirm } from '@/components/ui'
+import { usePermission } from '@/hooks/usePermission'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { number, date } from '@/lib/format'
+import { useCompanyHref } from '@/lib/useCompanyHref'
+import { cn } from '@/utils/utils'
+import { MFG_STEPS, MFG_TONE, mfgStatusLabel } from './mfg'
 
 export default function ManufacturingDetailClient({ id }: { id: string }) {
   const router = useRouter()
+  const href = useCompanyHref()
+  const { canModify, canDelete } = usePermission()
   const [order, setOrder] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
-  const [updating, setUpdating] = useState(false)
+  const [busy, setBusy] = useState('')
+  const [confirm, confirmDialog] = useConfirm()
 
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchOrder(sub)
-  }, [id])
-
-  async function fetchOrder(sub: string) {
+  const load = useCallback(async () => {
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/manufacturing/orders/${id}`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const res = await tenantApi.get(`/erp/manufacturing/orders/${id}`)
       setOrder(res.data.data)
-    } catch {
-      toast.error('Failed to load order')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load this production order.'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [id])
 
-  async function handleStatusUpdate(status: string) {
-    const confirmMsg = status === 'COMPLETED'
-      ? 'Mark as COMPLETED? Raw materials will be deducted and finished product added to stock.'
-      : `Change status to ${status}?`
-    if (!confirm(confirmMsg)) return
-    setUpdating(true)
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const status: string = order?.status || ''
+  const mats: any[] = order?.materials || []
+  const done = status === 'COMPLETED'
+  const short = mats.filter((m) => !done && Number(m.requiredQuantity) > Number(m.availableStock))
+
+  async function setStatus(next: string) {
+    const msgs: Record<string, { title: string; message: string; label: string; danger?: boolean }> = {
+      IN_PROGRESS: done
+        ? { title: 'Undo completion?', message: `${number(order.quantity)} ${order.productName} leave stock again and the raw materials are put back.`, label: 'Undo completion', danger: true }
+        : { title: 'Start production?', message: 'Nothing changes in stock yet.', label: 'Start' },
+      COMPLETED: { title: `Complete ${order.orderNumber}?`, message: `The raw materials below leave stock and ${number(order.quantity)} ${order.productName} are added to stock.`, label: 'Complete and update stock' },
+      CANCELLED: { title: `Cancel ${order.orderNumber}?`, message: 'The order stays on file as cancelled.', label: 'Cancel order', danger: true },
+      PLANNED: { title: 'Move back to planned?', message: 'Nothing changes in stock.', label: 'Move back' },
+    }
+    const m = msgs[next]
+    if (!(await confirm({ title: m.title, message: m.message, confirmLabel: m.label, danger: m.danger }))) return
+    setBusy(next)
     try {
-      await axios.patch(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/manufacturing/orders/${id}/status`,
-        { status },
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
-      )
-      toast.success(status === 'COMPLETED' ? 'Production completed — stock updated!' : 'Status updated')
-      fetchOrder(subdomain)
-    } catch {
-      toast.error('Failed to update status')
+      await tenantApi.patch(`/erp/manufacturing/orders/${id}/status`, { status: next })
+      toast.success(next === 'COMPLETED' ? 'Completed. Stock updated.' : `Marked ${mfgStatusLabel(next).toLowerCase()}`)
+      load()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not change the status.'))
     } finally {
-      setUpdating(false)
+      setBusy('')
     }
   }
 
-  function getStatusStyle(status: string) {
-    switch (status) {
-      case 'COMPLETED':   return { bg: '#F0FDF4', color: '#16A34A', border: '#BBF7D0' }
-      case 'IN_PROGRESS': return { bg: '#EFF6FF', color: '#1D4ED8', border: '#BFDBFE' }
-      case 'PLANNED':     return { bg: '#FFF7ED', color: '#EA580C', border: '#FED7AA' }
-      case 'CANCELLED':   return { bg: '#FEF2F2', color: '#DC2626', border: '#FECACA' }
-      default:            return { bg: '#F1F5F9', color: '#64748B', border: '#E2E8F0' }
+  async function remove() {
+    const ok = await confirm({
+      title: `Delete ${order.orderNumber}?`,
+      message: done ? 'The finished goods are taken out of stock and the raw materials put back.' : undefined,
+      confirmLabel: 'Delete order',
+      danger: true,
+    })
+    if (!ok) return
+    try {
+      await tenantApi.delete(`/erp/manufacturing/orders/${id}`)
+      toast.success(`${order.orderNumber} deleted`)
+      router.push(href('/erp/manufacturing'))
+    } catch (err) {
+      toast.error(apiError(err, 'Could not delete the order.'))
     }
   }
 
-  if (loading) return (
-    <TenantLayout title="Production Order" subtitle="" requiredModule="manufacturing">
-      <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-        <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    </TenantLayout>
-  )
-
-  if (!order) return (
-    <TenantLayout title="Production Order" subtitle="" requiredModule="manufacturing">
-      <div style={{ textAlign: 'center', padding: '80px' }}>
-        <div style={{ fontSize: '48px', marginBottom: '16px' }}>🏭</div>
-        <h3>Order not found</h3>
-        <button onClick={() => router.push('/erp/manufacturing')} style={{ marginTop: '16px', padding: '10px 20px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>← Back</button>
-      </div>
-    </TenantLayout>
-  )
-
-  const ss = getStatusStyle(order.status)
+  const stepIndex = MFG_STEPS.findIndex((s) => s.key === status)
 
   return (
     <TenantLayout
-      title={order.orderNumber}
-      subtitle={`Production order for ${order.productName}`}
+      title={order ? order.orderNumber : 'Production order'}
+      subtitle={order ? `${number(order.quantity)} ${order.productUnit || 'pcs'} of ${order.productName}` : undefined}
       requiredModule="manufacturing"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <button onClick={() => router.push('/erp/manufacturing')} style={{ padding: '8px 16px', background: '#F1F5F9', color: '#64748B', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>← Back</button>
-          {order.status === 'PLANNED' && (
-            <button onClick={() => handleStatusUpdate('IN_PROGRESS')} disabled={updating} style={{ padding: '8px 16px', background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>▶ Start Production</button>
+        <>
+          <Link href={href('/erp/manufacturing')} className={buttonStyles({ variant: 'ghost' })}>
+            <ArrowLeft className="size-4" aria-hidden />
+            All orders
+          </Link>
+          {order && <Button variant="secondary" icon={<Printer className="size-4" />} onClick={() => window.print()}>Print</Button>}
+          {order && canModify('manufacturing') && status === 'PLANNED' && (
+            <Button variant="secondary" icon={<Play className="size-4" />} loading={busy === 'IN_PROGRESS'} onClick={() => setStatus('IN_PROGRESS')}>Start</Button>
           )}
-          {order.status === 'IN_PROGRESS' && (
-            <button onClick={() => handleStatusUpdate('COMPLETED')} disabled={updating} style={{ padding: '8px 16px', background: '#F0FDF4', color: '#16A34A', border: '1px solid #BBF7D0', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>✓ Mark Complete</button>
+          {order && canModify('manufacturing') && (status === 'PLANNED' || status === 'IN_PROGRESS') && (
+            <Button icon={<Check className="size-4" />} loading={busy === 'COMPLETED'} disabled={short.length > 0} onClick={() => setStatus('COMPLETED')}>Complete</Button>
           )}
-          <button onClick={() => window.print()} style={{ padding: '8px 16px', background: '#EFF6FF', color: '#1D4ED8', border: '1px solid #BFDBFE', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>🖨️ Print</button>
-        </div>
+        </>
       }
     >
-      <div style={{ maxWidth: '860px', margin: '0 auto', background: '#fff', borderRadius: '20px', border: '1px solid #E2E8F0', boxShadow: '0 4px 24px rgba(0,0,0,0.06)', overflow: 'hidden' }}>
+      {loading ? (
+        <Spinner label="Loading order" />
+      ) : !order ? (
+        <Card><EmptyState icon={<Factory />} title="Order not found" /></Card>
+      ) : (
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_320px] xl:items-start">
+          <div className="flex flex-col gap-5">
+            {/* Progress */}
+            <Card className="p-4 sm:p-5">
+              {status === 'CANCELLED' ? (
+                <p className="flex items-center gap-2 text-sm text-bad"><X className="size-4" aria-hidden /> This order was cancelled.</p>
+              ) : (
+                <ol className="flex items-center gap-2">
+                  {MFG_STEPS.map((s, i) => {
+                    const reached = i <= stepIndex
+                    return (
+                      <li key={s.key} className="flex flex-1 items-center gap-2 last:flex-none">
+                        <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold', reached ? 'bg-brand text-white' : 'border border-line-strong text-ink-3')}>
+                          {i < stepIndex || (i === stepIndex && done) ? <Check className="size-4" aria-hidden /> : i + 1}
+                        </span>
+                        <span className={cn('text-[13px] whitespace-nowrap', reached ? 'font-medium text-ink' : 'text-ink-3')}>{s.label}</span>
+                        {i < MFG_STEPS.length - 1 && <span className={cn('mx-1 h-px flex-1', i < stepIndex ? 'bg-brand' : 'bg-line-strong')} aria-hidden />}
+                      </li>
+                    )
+                  })}
+                </ol>
+              )}
+            </Card>
 
-        {/* Header */}
-        <div style={{ background: 'linear-gradient(135deg, #1E3A5F, #2E86AB)', padding: '32px 40px', display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ width: '44px', height: '44px', background: 'rgba(255,255,255,0.2)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '22px' }}>🏭</div>
-            <div>
-              <div style={{ color: '#fff', fontWeight: 800, fontSize: '20px' }}>Production Order</div>
-              <div style={{ color: '#93C5FD', fontSize: '12px' }}>{new Date(order.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</div>
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ fontSize: '28px', fontWeight: 900, color: '#fff', marginBottom: '8px' }}>{order.orderNumber}</div>
-            <span style={{ padding: '4px 14px', borderRadius: '99px', fontSize: '12px', fontWeight: 700, background: ss.bg, color: ss.color, border: `1px solid ${ss.border}` }}>{order.status}</span>
-          </div>
-        </div>
-
-        {/* Details */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '1px solid #F1F5F9' }}>
-          <div style={{ padding: '28px 40px', borderRight: '1px solid #F1F5F9' }}>
-            <p style={{ fontSize: '11px', fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '10px' }}>Finished Product</p>
-            <p style={{ fontSize: '20px', fontWeight: 700, color: '#0F172A', marginBottom: '4px' }}>{order.productName}</p>
-            <p style={{ fontSize: '13px', color: '#94A3B8', marginBottom: '8px' }}>{order.productSku}</p>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <span style={{ fontSize: '13px', color: '#64748B' }}>Quantity to produce:</span>
-              <span style={{ fontSize: '18px', fontWeight: 800, color: '#1E3A5F' }}>{parseFloat(order.quantity).toLocaleString()} {order.productUnit}</span>
-            </div>
-            {order.status === 'COMPLETED' && (
-              <div style={{ marginTop: '8px', padding: '6px 12px', background: '#F0FDF4', border: '1px solid #BBF7D0', borderRadius: '8px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                <span style={{ color: '#16A34A', fontSize: '12px' }}>✓</span>
-                <span style={{ fontSize: '12px', fontWeight: 600, color: '#16A34A' }}>Added to stock</span>
+            {short.length > 0 && (status === 'PLANNED' || status === 'IN_PROGRESS') && (
+              <div className="flex items-start gap-3 rounded-[var(--radius-panel)] border border-warn/25 bg-warn-soft px-4 py-3 text-sm">
+                <CircleAlert className="mt-0.5 size-5 shrink-0 text-warn" aria-hidden />
+                <div>
+                  <p className="font-medium text-warn">Not enough raw material to complete</p>
+                  <p className="text-ink-2">Buy or adjust stock for: {short.map((m) => m.productName).join(', ')}.</p>
+                </div>
               </div>
             )}
-          </div>
-          <div style={{ padding: '28px 40px' }}>
-            <p style={{ fontSize: '11px', fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '10px' }}>Schedule</p>
-            {[
-              { label: 'Start Date', value: order.startDate ? new Date(order.startDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'Not set' },
-              { label: 'End Date', value: order.endDate ? new Date(order.endDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'Not set' },
-              { label: 'Current Stock', value: `${parseFloat(order.currentStock || 0).toLocaleString()} ${order.productUnit}` },
-            ].map((row) => (
-              <div key={row.label} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                <span style={{ fontSize: '12px', color: '#94A3B8' }}>{row.label}</span>
-                <span style={{ fontSize: '12px', fontWeight: 600, color: '#374151' }}>{row.value}</span>
-              </div>
-            ))}
-          </div>
-        </div>
 
-        {/* Raw Materials */}
-        <div style={{ padding: '28px 40px' }}>
-          <p style={{ fontSize: '11px', fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '16px' }}>
-            Raw Materials Required
-          </p>
-          {(!order.materials || order.materials.length === 0) ? (
-            <p style={{ color: '#94A3B8', fontSize: '13px' }}>No raw materials specified for this order.</p>
-          ) : (
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ background: '#F8FAFC' }}>
-                  {['Product', 'SKU', 'Available Stock', 'Required Qty', 'Used Qty', 'Status'].map((h) => (
-                    <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 700, color: '#64748B', textTransform: 'uppercase', borderBottom: '2px solid #E2E8F0' }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {order.materials.map((mat: any, i: number) => {
-                  const available = parseFloat(mat.availableStock || 0)
-                  const required = parseFloat(mat.requiredQuantity || 0)
-                  const sufficient = available >= required
-                  return (
-                    <tr key={mat.id} style={{ borderBottom: i < order.materials.length - 1 ? '1px solid #F8FAFC' : 'none' }}>
-                      <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{mat.productName}</td>
-                      <td style={{ padding: '12px 14px' }}>
-                        <span style={{ fontFamily: 'monospace', fontSize: '11px', color: '#7C3AED', background: '#FAF5FF', padding: '2px 8px', borderRadius: '6px' }}>{mat.productSku}</span>
-                      </td>
-                      <td style={{ padding: '12px 14px', fontSize: '13px', fontWeight: 600, color: sufficient ? '#16A34A' : '#DC2626' }}>
-                        {available.toLocaleString()} {mat.unit}
-                      </td>
-                      <td style={{ padding: '12px 14px', fontSize: '13px', fontWeight: 700, color: '#0F172A' }}>
-                        {required.toLocaleString()} {mat.unit}
-                      </td>
-                      <td style={{ padding: '12px 14px', fontSize: '13px', color: '#64748B' }}>
-                        {parseFloat(mat.usedQuantity || 0) > 0 ? `${parseFloat(mat.usedQuantity).toLocaleString()} ${mat.unit}` : '—'}
-                      </td>
-                      <td style={{ padding: '12px 14px' }}>
-                        {order.status === 'COMPLETED' ? (
-                          <span style={{ padding: '3px 8px', background: '#F0FDF4', color: '#16A34A', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>✓ Used</span>
-                        ) : sufficient ? (
-                          <span style={{ padding: '3px 8px', background: '#F0FDF4', color: '#16A34A', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>✓ Sufficient</span>
-                        ) : (
-                          <span style={{ padding: '3px 8px', background: '#FEF2F2', color: '#DC2626', borderRadius: '99px', fontSize: '11px', fontWeight: 600 }}>⚠ Insufficient</span>
-                        )}
-                      </td>
+            <Card>
+              <CardHeader title="Raw materials" description={done ? 'Taken out of stock when the order was completed' : 'Taken out of stock when you complete the order'} />
+              <TableWrap>
+                <Table>
+                  <thead>
+                    <tr>
+                      <Th>Material</Th>
+                      <Th align="right">{done ? 'Used' : 'Needed'}</Th>
+                      <Th align="right" className="hidden sm:table-cell">In stock now</Th>
+                      {!done && <Th>Ready</Th>}
                     </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
-
-        {/* Notes + Footer */}
-        {order.notes && (
-          <div style={{ padding: '0 40px 24px' }}>
-            <p style={{ fontSize: '11px', fontWeight: 700, color: '#94A3B8', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '8px' }}>Notes</p>
-            <p style={{ fontSize: '13px', color: '#64748B', lineHeight: 1.6 }}>{order.notes}</p>
+                  </thead>
+                  <tbody>
+                    {mats.map((m) => {
+                      const enough = Number(m.availableStock) >= Number(m.requiredQuantity)
+                      return (
+                        <Tr key={m.id}>
+                          <Td>
+                            <p className="font-medium">{m.productName}</p>
+                            {m.productSku && <p className="text-xs text-ink-3">{m.productSku}</p>}
+                          </Td>
+                          <Td align="right">{number(done ? m.usedQuantity || m.requiredQuantity : m.requiredQuantity)} <span className="text-xs text-ink-3">{m.unit || 'pcs'}</span></Td>
+                          <Td align="right" className="hidden text-ink-2 sm:table-cell">{number(m.availableStock)}</Td>
+                          {!done && <Td>{enough ? <Badge tone="good">Enough</Badge> : <Badge tone="bad">Short {number(Number(m.requiredQuantity) - Number(m.availableStock))}</Badge>}</Td>}
+                        </Tr>
+                      )
+                    })}
+                  </tbody>
+                </Table>
+              </TableWrap>
+            </Card>
           </div>
-        )}
 
-        <div style={{ padding: '16px 40px', borderTop: '1px solid #F1F5F9', background: '#F8FAFC', textAlign: 'center' }}>
-          <p style={{ fontSize: '12px', color: '#94A3B8' }}>Generated by MyERP • {new Date().toLocaleDateString()}</p>
+          <Card>
+            <CardHeader title="Details" />
+            <dl className="divide-y divide-line text-sm">
+              {[
+                ['Status', <Badge key="s" tone={MFG_TONE[status]}>{mfgStatusLabel(status)}</Badge>],
+                ['Product', order.productName],
+                ['Quantity', `${number(order.quantity)} ${order.productUnit || 'pcs'}`],
+                ['In stock now', `${number(order.currentStock)} ${order.productUnit || 'pcs'}`],
+                ['Start', order.startDate ? date(order.startDate) : '—'],
+                ['Finish by', order.endDate ? date(order.endDate) : '—'],
+                ['Created', date(order.createdAt)],
+              ].map(([k, v]) => (
+                <div key={String(k)} className="flex items-center justify-between gap-4 px-4 py-2.5 sm:px-5">
+                  <dt className="text-ink-3">{k}</dt>
+                  <dd className="text-right font-medium text-ink">{v}</dd>
+                </div>
+              ))}
+            </dl>
+            {order.notes && <p className="border-t border-line px-4 py-3 text-sm text-ink-2 sm:px-5">{order.notes}</p>}
+            {canModify('manufacturing') && (
+              <div className="flex flex-wrap gap-2 border-t border-line px-4 py-3 sm:px-5 print:hidden">
+                {done && <Button size="sm" variant="secondary" icon={<RotateCcw className="size-3.5" />} loading={busy === 'IN_PROGRESS'} onClick={() => setStatus('IN_PROGRESS')}>Undo completion</Button>}
+                {status === 'IN_PROGRESS' && <Button size="sm" variant="ghost" onClick={() => setStatus('PLANNED')}>Back to planned</Button>}
+                {status === 'CANCELLED' && <Button size="sm" variant="secondary" onClick={() => setStatus('PLANNED')}>Reopen</Button>}
+                {(status === 'PLANNED' || status === 'IN_PROGRESS') && <Button size="sm" variant="danger-soft" onClick={() => setStatus('CANCELLED')}>Cancel order</Button>}
+                {canDelete('manufacturing') && <Button size="sm" variant="ghost" icon={<Trash2 className="size-3.5" />} onClick={remove} className="ml-auto text-bad hover:text-bad">Delete</Button>}
+              </div>
+            )}
+          </Card>
         </div>
-      </div>
-
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @media print {
-          aside, header, button { display: none !important; }
-          main { margin: 0 !important; padding: 0 !important; }
-        }
-      `}</style>
+      )}
+      {confirmDialog}
     </TenantLayout>
   )
 }

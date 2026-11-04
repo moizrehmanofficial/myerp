@@ -45,7 +45,7 @@ export class SuperAdminController {
   }
 
   @Patch('admins/:id')
-  async updateAdmin(@Param('id') id: string, @Body() body: any) {
-    return this.superAdminService.updateAdmin(id, body);
+  async updateAdmin(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    return this.superAdminService.updateAdmin(id, body, req.user?.id);
   }
 }

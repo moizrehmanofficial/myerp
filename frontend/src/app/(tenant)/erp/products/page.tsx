@@ -1,565 +1,354 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { Package, Pencil, Plus, Trash2, Wand2 } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
 import Pagination from '@/components/common/Pagination'
+import {
+  Badge, Button, Card, Field, Input, Select, Modal, Table, TableWrap, Th, Td, Tr,
+  Spinner, EmptyState, SearchInput, ListToolbar, IconAction, useConfirm,
+} from '@/components/ui'
+import { usePermission } from '@/hooks/usePermission'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { money, number } from '@/lib/format'
 import { getTenantSlug } from '@/lib/getTenantSlug'
 
+const UNITS = ['pcs', 'kg', 'g', 'ltr', 'ml', 'm', 'cm', 'box', 'dozen', 'pair']
+const EMPTY = { name: '', sku: '', barcode: '', unit: 'pcs', categoryId: '', brandId: '', purchasePrice: '', salePrice: '', minStock: '0', maxStock: '0' }
+
 export default function ProductsPage() {
-  const [products, setProducts] = useState<any[]>([])
+  const [rows, setRows] = useState<any[]>([])
+  const [meta, setMeta] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [showModal, setShowModal] = useState(false)
-  const [editingProduct, setEditingProduct] = useState<any>(null)
-  const [submitting, setSubmitting] = useState(false)
-  const [subdomain, setSubdomain] = useState('')
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(25)
-  const [meta, setMeta] = useState<any>(null)
+  const [categories, setCategories] = useState<any[]>([])
+  const [brands, setBrands] = useState<any[]>([])
+  const [editing, setEditing] = useState<any>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [form, setForm] = useState(EMPTY)
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  const [confirm, confirmDialog] = useConfirm()
+  const { canWrite, canModify, canDelete } = usePermission()
 
-  const [form, setForm] = useState({
-    name: '',
-    sku: '',
-    barcode: '',
-    unit: 'pcs',
-    purchasePrice: '',
-    salePrice: '',
-    minStock: '0',
-    maxStock: '0',
-  })
-
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchProducts(sub)
-  }, [])
-
-  function getApi(sub: string) {
-    return {
-      get: (url: string) => axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}${url}`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      ),
-      post: (url: string, data: any) => axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}${url}`, data,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      ),
-      put: (url: string, data: any) => axios.put(
-        `${process.env.NEXT_PUBLIC_API_URL}${url}`, data,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      ),
-      delete: (url: string) => axios.delete(
-        `${process.env.NEXT_PUBLIC_API_URL}${url}`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      ),
-    }
-  }
-
-  async function fetchProducts(sub: string, searchTerm = '', p = 1, l = 25) {
+  const load = useCallback(async (q: string, p: number, l: number) => {
+    setLoading(true)
     try {
-      const res = await getApi(sub).get(`/erp/products?search=${searchTerm}&page=${p}&limit=${l}`)
-      setProducts(res.data.data)
+      const res = await tenantApi.get(`/erp/products?search=${encodeURIComponent(q)}&page=${p}&limit=${l}`)
+      setRows(res.data.data || [])
       setMeta(res.data.meta)
-    } catch {
-      toast.error('Failed to load products')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load products.'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  function generateSKU() {
-    const sku = 'SKU-' + Date.now().toString().slice(-6)
-    setForm((prev) => ({ ...prev, sku }))
+  useEffect(() => {
+    load(search, page, limit)
+  }, [load, search, page, limit])
+
+  // Category and brand lists for the form
+  useEffect(() => {
+    tenantApi.get('/erp/products/categories').then((r) => setCategories(r.data.data || [])).catch(() => {})
+    tenantApi.get('/erp/products/brands').then((r) => setBrands(r.data.data || [])).catch(() => {})
+  }, [])
+
+  function set<K extends keyof typeof EMPTY>(key: K, value: string) {
+    setForm((f) => ({ ...f, [key]: value }))
   }
 
   function openCreate() {
-    setEditingProduct(null)
-    setForm({ name: '', sku: '', barcode: '', unit: 'pcs', purchasePrice: '', salePrice: '', minStock: '0', maxStock: '0' })
-    setShowModal(true)
+    setEditing(null)
+    setForm(EMPTY)
+    // Low-stock level for new products comes from Settings
+    tenantApi
+      .get('/erp/settings')
+      .then((r) => {
+        const d = Number(r.data.data?.low_stock_alert)
+        if (d > 0) setForm((f) => (f.minStock === '0' ? { ...f, minStock: String(d) } : f))
+      })
+      .catch(() => {})
+    setErrors({})
+    setShowForm(true)
   }
 
-  function openEdit(product: any) {
-    setEditingProduct(product)
+  function openEdit(p: any) {
+    setEditing(p)
     setForm({
-      name: product.name || '',
-      sku: product.sku || '',
-      barcode: product.barcode || '',
-      unit: product.unit || 'pcs',
-      purchasePrice: product.purchasePrice?.toString() || '',
-      salePrice: product.salePrice?.toString() || '',
-      minStock: product.minStock?.toString() || '0',
-      maxStock: product.maxStock?.toString() || '0',
+      name: p.name || '',
+      sku: p.sku || '',
+      barcode: p.barcode || '',
+      unit: p.unit || 'pcs',
+      categoryId: p.categoryId || '',
+      brandId: p.brandId || '',
+      purchasePrice: p.purchasePrice?.toString() || '',
+      salePrice: p.salePrice?.toString() || '',
+      minStock: p.minStock?.toString() || '0',
+      maxStock: p.maxStock?.toString() || '0',
     })
-    setShowModal(true)
+    setErrors({})
+    setShowForm(true)
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!form.name || !form.sku) {
-      toast.error('Name and SKU are required')
-      return
-    }
-    setSubmitting(true)
+  async function save(e?: React.FormEvent) {
+    e?.preventDefault()
+    const errs: Record<string, string> = {}
+    if (!form.name.trim()) errs.name = 'Enter the product name.'
+    if (!form.sku.trim()) errs.sku = 'Enter a product code, or press Generate.'
+    setErrors(errs)
+    if (Object.keys(errs).length) return
+
+    setSaving(true)
     try {
       const payload = {
         ...form,
+        categoryId: form.categoryId || null,
+        brandId: form.brandId || null,
         purchasePrice: parseFloat(form.purchasePrice) || 0,
         salePrice: parseFloat(form.salePrice) || 0,
         minStock: parseFloat(form.minStock) || 0,
         maxStock: parseFloat(form.maxStock) || 0,
       }
-      if (editingProduct) {
-        await getApi(subdomain).put(`/erp/products/${editingProduct.id}`, payload)
-        toast.success('Product updated')
+      if (editing) {
+        await tenantApi.put(`/erp/products/${editing.id}`, payload)
+        toast.success('Product saved')
       } else {
-        await getApi(subdomain).post('/erp/products', payload)
-        toast.success('Product created')
+        await tenantApi.post('/erp/products', payload)
+        toast.success('Product added')
       }
-      setShowModal(false)
-      fetchProducts(subdomain, search, page, limit)
-    } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to save product')
+      setShowForm(false)
+      load(search, page, limit)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not save the product.'))
     } finally {
-      setSubmitting(false)
+      setSaving(false)
     }
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm('Delete this product?')) return
+  async function remove(p: any) {
+    const ok = await confirm({
+      title: `Delete ${p.name}?`,
+      message: 'It will no longer appear when creating orders or invoices. Past records keep it.',
+      confirmLabel: 'Delete product',
+      danger: true,
+    })
+    if (!ok) return
     try {
-      await getApi(subdomain).delete(`/erp/products/${id}`)
+      await tenantApi.delete(`/erp/products/${p.id}`)
       toast.success('Product deleted')
-      fetchProducts(subdomain, search, page, limit)
-    } catch {
-      toast.error('Failed to delete product')
+      load(search, page, limit)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not delete the product.'))
     }
   }
 
-  const units = ['pcs', 'kg', 'g', 'ltr', 'ml', 'm', 'cm', 'box', 'dozen', 'pair']
+  const showActions = canModify('products') || canDelete('products')
+  const margin = (Number(form.salePrice) || 0) - (Number(form.purchasePrice) || 0)
 
   return (
     <TenantLayout
       title="Products"
-      subtitle="Manage your product catalog"
+      subtitle="Everything you buy and sell"
       requiredModule="products"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <>
           <ExportButton
-            data={products}
-            filename={`products-${subdomain}`}
-            title="Products Report"
-            subtitle={`${subdomain} ERP • ${new Date().toLocaleDateString()}`}
+            data={rows}
+            filename={`products-${typeof window !== 'undefined' ? getTenantSlug() : ''}`}
+            title="Products"
+            subtitle={new Date().toLocaleDateString('en-GB')}
             columns={[
               { header: 'Name', value: (r) => r.name, width: 28 },
-              { header: 'SKU', value: (r) => r.sku || '', width: 18 },
+              { header: 'Code (SKU)', value: (r) => r.sku || '', width: 18 },
+              { header: 'Category', value: (r) => r.categoryName || '', width: 18 },
               { header: 'Unit', value: (r) => r.unit || '', width: 10 },
-              { header: 'Purchase Price', value: (r) => parseFloat(r.purchasePrice || 0).toFixed(2), width: 18 },
-              { header: 'Sale Price', value: (r) => parseFloat(r.salePrice || 0).toFixed(2), width: 15 },
-              { header: 'Stock', value: (r) => parseFloat(r.stock || 0).toFixed(2), width: 12 },
+              { header: 'Cost price', value: (r) => Number(r.purchasePrice || 0).toFixed(2), width: 16 },
+              { header: 'Sale price', value: (r) => Number(r.salePrice || 0).toFixed(2), width: 16 },
+              { header: 'In stock', value: (r) => Number(r.stock || 0).toFixed(2), width: 12 },
             ]}
           />
-          <button onClick={openCreate} style={{
-            padding: '10px 18px', background: '#1E3A5F',
-            color: '#fff', border: 'none', borderRadius: '10px',
-            fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-            fontFamily: 'Inter, sans-serif',
-          }}>➕ Add Product</button>
-        </div>
+          {canWrite('products') && (
+            <Button icon={<Plus className="size-4" />} onClick={openCreate}>
+              Add product
+            </Button>
+          )}
+        </>
       }
     >
-      {/* Search */}
-      <form
-        onSubmit={(e) => { e.preventDefault(); setPage(1); setLoading(true); fetchProducts(subdomain, search, 1, limit) }}
-        style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}
+      <Card>
+        <ListToolbar>
+          <SearchInput
+            placeholder="Search by name, code or barcode"
+            onSearch={(q) => {
+              setPage(1)
+              setSearch(q)
+            }}
+          />
+        </ListToolbar>
+
+        {loading ? (
+          <Spinner label="Loading products" />
+        ) : rows.length === 0 ? (
+          <EmptyState
+            icon={<Package />}
+            title={search ? `No products match "${search}"` : 'No products yet'}
+            description={search ? 'Check the spelling or search by product code.' : 'Add the items you sell so you can use them on invoices and orders.'}
+            action={!search && canWrite('products') ? <Button icon={<Plus className="size-4" />} onClick={openCreate}>Add product</Button> : undefined}
+          />
+        ) : (
+          <>
+            <TableWrap>
+              <Table>
+                <thead>
+                  <tr>
+                    <Th>Product</Th>
+                    <Th className="hidden lg:table-cell">Category</Th>
+                    <Th align="right" className="hidden md:table-cell">Cost price</Th>
+                    <Th align="right">Sale price</Th>
+                    <Th align="right">In stock</Th>
+                    {showActions && <Th align="right"><span className="sr-only">Actions</span></Th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((p) => {
+                    const stock = Number(p.stock || 0)
+                    const min = Number(p.minStock || 0)
+                    const low = stock <= 0 ? 'out' : min > 0 && stock <= min ? 'low' : null
+                    return (
+                      <Tr key={p.id}>
+                        <Td>
+                          <p className="font-medium text-ink">{p.name}</p>
+                          <p className="text-xs text-ink-3">
+                            {p.sku}
+                            {p.brandName ? `, ${p.brandName}` : ''}
+                          </p>
+                        </Td>
+                        <Td className="hidden text-ink-2 lg:table-cell">{p.categoryName || '—'}</Td>
+                        <Td align="right" className="hidden text-ink-2 md:table-cell">{money(p.purchasePrice)}</Td>
+                        <Td align="right" className="font-medium">{money(p.salePrice)}</Td>
+                        <Td align="right">
+                          <div className="flex flex-col items-end gap-1">
+                            <span className={low === 'out' ? 'font-medium text-bad' : 'font-medium'}>
+                              {number(stock)} <span className="text-xs font-normal text-ink-3">{p.unit}</span>
+                            </span>
+                            {low === 'out' && <Badge tone="bad">Out of stock</Badge>}
+                            {low === 'low' && <Badge tone="warn">Low stock</Badge>}
+                          </div>
+                        </Td>
+                        {showActions && (
+                          <Td align="right" className="w-24 whitespace-nowrap">
+                            {canModify('products') && (
+                              <IconAction label={`Edit ${p.name}`} onClick={() => openEdit(p)}>
+                                <Pencil />
+                              </IconAction>
+                            )}
+                            {canDelete('products') && (
+                              <IconAction label={`Delete ${p.name}`} onClick={() => remove(p)} danger>
+                                <Trash2 />
+                              </IconAction>
+                            )}
+                          </Td>
+                        )}
+                      </Tr>
+                    )
+                  })}
+                </tbody>
+              </Table>
+            </TableWrap>
+            {meta && (
+              <Pagination page={page} totalPages={meta.totalPages || 1} total={meta.total || 0} limit={limit} onPageChange={setPage} onLimitChange={setLimit} />
+            )}
+          </>
+        )}
+      </Card>
+
+      <Modal
+        open={showForm}
+        onClose={() => setShowForm(false)}
+        title={editing ? 'Edit product' : 'Add product'}
+        description={editing ? undefined : 'New products start with 0 in stock. Stock goes up when a purchase is received.'}
+        size="lg"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowForm(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => save()} loading={saving}>
+              {editing ? 'Save changes' : 'Add product'}
+            </Button>
+          </>
+        }
       >
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name or SKU..."
-          style={{
-            flex: 1, padding: '10px 16px',
-            border: '1.5px solid #E2E8F0', borderRadius: '10px',
-            fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-          }}
-        />
-        <button type="submit" style={{
-          padding: '10px 20px', background: '#1E3A5F',
-          color: '#fff', border: 'none', borderRadius: '10px',
-          fontSize: '13px', fontWeight: 600, cursor: 'pointer',
-          fontFamily: 'Inter, sans-serif',
-        }}>Search</button>
-      </form>
-
-      {/* Table */}
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{
-            width: '40px', height: '40px',
-            border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F',
-            borderRadius: '50%', animation: 'spin 0.7s linear infinite',
-          }} />
-        </div>
-      ) : products.length === 0 ? (
-        <div style={{
-          background: '#fff', borderRadius: '16px',
-          border: '1px solid #E2E8F0', padding: '80px', textAlign: 'center',
-        }}>
-          <div style={{ fontSize: '48px', marginBottom: '12px' }}>📦</div>
-          <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '8px' }}>
-            No products yet
-          </h3>
-          <p style={{ fontSize: '14px', color: '#94A3B8', marginBottom: '20px' }}>
-            Add your first product to get started
-          </p>
-          <button onClick={openCreate} style={{
-            padding: '10px 24px', background: '#1E3A5F',
-            color: '#fff', border: 'none', borderRadius: '10px',
-            fontSize: '14px', fontWeight: 600, cursor: 'pointer',
-            fontFamily: 'Inter, sans-serif',
-          }}>➕ Add First Product</button>
-        </div>
-      ) : (
-        <div style={{
-          background: '#fff', borderRadius: '16px',
-          border: '1px solid #E2E8F0', overflow: 'hidden',
-        }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                {['Product', 'SKU', 'Unit', 'Purchase Price', 'Sale Price', 'Stock', 'Actions'].map((h) => (
-                  <th key={h} style={{
-                    padding: '12px 16px', textAlign: 'left',
-                    fontSize: '12px', fontWeight: 600,
-                    color: '#64748B', textTransform: 'uppercase',
-                  }}>{h}</th>
+        <form onSubmit={save} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <Field label="Product name" required error={errors.name} className="sm:col-span-2">
+            {(id) => <Input id={id} value={form.name} onChange={(e) => set('name', e.target.value)} autoFocus />}
+          </Field>
+          <Field label="Product code (SKU)" required error={errors.sku}>
+            {(id) => (
+              <div className="flex gap-2">
+                <Input id={id} value={form.sku} onChange={(e) => set('sku', e.target.value)} />
+                <Button variant="secondary" icon={<Wand2 className="size-4" />} onClick={() => set('sku', 'SKU-' + Date.now().toString().slice(-6))}>
+                  Generate
+                </Button>
+              </div>
+            )}
+          </Field>
+          <Field label="Barcode" hint="Optional">
+            {(id) => <Input id={id} value={form.barcode} onChange={(e) => set('barcode', e.target.value)} />}
+          </Field>
+          <Field label="Category">
+            {(id) => (
+              <Select id={id} value={form.categoryId} onChange={(e) => set('categoryId', e.target.value)}>
+                <option value="">No category</option>
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
-              </tr>
-            </thead>
-            <tbody>
-              {products.map((p, i) => (
-                <tr key={p.id} style={{
-                  borderBottom: i < products.length - 1 ? '1px solid #F1F5F9' : 'none',
-                }}
-                  onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                  onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                >
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <div style={{
-                        width: '36px', height: '36px', borderRadius: '10px',
-                        background: '#FAF5FF', display: 'flex',
-                        alignItems: 'center', justifyContent: 'center', fontSize: '18px',
-                      }}>📦</div>
-                      <span style={{ fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{p.name}</span>
-                    </div>
-                  </td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <span style={{
-                      fontSize: '12px', color: '#7C3AED',
-                      fontFamily: 'monospace', background: '#FAF5FF',
-                      padding: '2px 8px', borderRadius: '6px',
-                    }}>{p.sku}</span>
-                  </td>
-                  <td style={{ padding: '14px 16px', fontSize: '13px', color: '#64748B' }}>{p.unit}</td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#374151' }}>
-                      PKR {parseFloat(p.purchasePrice || 0).toLocaleString()}
-                    </span>
-                  </td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: '#16A34A' }}>
-                      PKR {parseFloat(p.salePrice || 0).toLocaleString()}
-                    </span>
-                  </td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <span style={{
-                      fontSize: '13px', fontWeight: 700,
-                      color: parseFloat(p.stock) <= parseFloat(p.minStock) ? '#DC2626' : '#0F172A',
-                    }}>
-                      {parseFloat(p.stock || 0).toLocaleString()}
-                    </span>
-                    {parseFloat(p.stock) <= parseFloat(p.minStock) && (
-                      <span style={{
-                        marginLeft: '6px', fontSize: '10px',
-                        background: '#FEF2F2', color: '#DC2626',
-                        padding: '2px 6px', borderRadius: '99px', fontWeight: 600,
-                      }}>Low</span>
-                    )}
-                  </td>
-                  <td style={{ padding: '14px 16px' }}>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button onClick={() => openEdit(p)} style={{
-                        padding: '6px 12px', background: '#EFF6FF',
-                        color: '#1D4ED8', border: '1px solid #BFDBFE',
-                        borderRadius: '8px', fontSize: '12px',
-                        fontWeight: 600, cursor: 'pointer',
-                        fontFamily: 'Inter, sans-serif',
-                      }}>Edit</button>
-                      <button onClick={() => handleDelete(p.id)} style={{
-                        padding: '6px 12px', background: '#FEF2F2',
-                        color: '#DC2626', border: '1px solid #FECACA',
-                        borderRadius: '8px', fontSize: '12px',
-                        fontWeight: 600, cursor: 'pointer',
-                        fontFamily: 'Inter, sans-serif',
-                      }}>Delete</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {meta && (
-        <Pagination
-          page={page}
-          totalPages={meta.totalPages}
-          total={meta.total}
-          limit={limit}
-          onPageChange={(p) => {
-            setPage(p)
-            setLoading(true)
-            fetchProducts(subdomain, search, p, limit)
-          }}
-          onLimitChange={(l) => {
-            setLimit(l)
-            setPage(1)
-            setLoading(true)
-            fetchProducts(subdomain, search, 1, l)
-          }}
-        />
-      )}
-
-      {/* Modal */}
-      {showModal && (
-        <div style={{
-          position: 'fixed', inset: 0,
-          background: 'rgba(0,0,0,0.5)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 200,
-        }}>
-          <div style={{
-            background: '#fff', borderRadius: '20px',
-            padding: '32px', width: '100%', maxWidth: '540px',
-            boxShadow: '0 25px 60px rgba(0,0,0,0.15)',
-            maxHeight: '90vh', overflowY: 'auto',
-          }}>
-            <h3 style={{ fontSize: '18px', fontWeight: 700, color: '#0F172A', marginBottom: '24px' }}>
-              {editingProduct ? 'Edit Product' : 'Add New Product'}
-            </h3>
-
-            <form onSubmit={handleSubmit}>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-
-                {/* Name */}
-                <div style={{ gridColumn: '1 / -1' }}>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    Product Name *
-                  </label>
-                  <input
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    placeholder="e.g. Samsung Galaxy A54"
-                    style={{
-                      width: '100%', padding: '10px 14px',
-                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                      fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                  />
-                </div>
-
-                {/* SKU */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    SKU *
-                  </label>
-                  <div style={{ display: 'flex', gap: '6px' }}>
-                    <input
-                      value={form.sku}
-                      onChange={(e) => setForm({ ...form, sku: e.target.value })}
-                      placeholder="SKU-001"
-                      style={{
-                        flex: 1, padding: '10px 14px',
-                        border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                        fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                      }}
-                      onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                      onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                    />
-                    <button
-                      type="button"
-                      onClick={generateSKU}
-                      style={{
-                        padding: '10px 12px', background: '#F1F5F9',
-                        border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                        fontSize: '12px', fontWeight: 600, color: '#374151',
-                        cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >Auto</button>
-                  </div>
-                </div>
-
-                {/* Barcode */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    Barcode
-                  </label>
-                  <input
-                    value={form.barcode}
-                    onChange={(e) => setForm({ ...form, barcode: e.target.value })}
-                    placeholder="Optional"
-                    style={{
-                      width: '100%', padding: '10px 14px',
-                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                      fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                  />
-                </div>
-
-                {/* Unit */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    Unit
-                  </label>
-                  <select
-                    value={form.unit}
-                    onChange={(e) => setForm({ ...form, unit: e.target.value })}
-                    style={{
-                      width: '100%', padding: '10px 14px',
-                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                      fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                      background: '#fff',
-                    }}
-                  >
-                    {units.map((u) => <option key={u} value={u}>{u}</option>)}
-                  </select>
-                </div>
-
-                {/* Purchase Price */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    Purchase Price (PKR)
-                  </label>
-                  <input
-                    type="number"
-                    value={form.purchasePrice}
-                    onChange={(e) => setForm({ ...form, purchasePrice: e.target.value })}
-                    placeholder="0"
-                    min="0"
-                    style={{
-                      width: '100%', padding: '10px 14px',
-                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                      fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                  />
-                </div>
-
-                {/* Sale Price */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    Sale Price (PKR)
-                  </label>
-                  <input
-                    type="number"
-                    value={form.salePrice}
-                    onChange={(e) => setForm({ ...form, salePrice: e.target.value })}
-                    placeholder="0"
-                    min="0"
-                    style={{
-                      width: '100%', padding: '10px 14px',
-                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                      fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                  />
-                </div>
-
-                {/* Min Stock */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    Min Stock (Alert Level)
-                  </label>
-                  <input
-                    type="number"
-                    value={form.minStock}
-                    onChange={(e) => setForm({ ...form, minStock: e.target.value })}
-                    placeholder="0"
-                    min="0"
-                    style={{
-                      width: '100%', padding: '10px 14px',
-                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                      fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                  />
-                </div>
-
-                {/* Max Stock */}
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 600, color: '#374151', marginBottom: '6px' }}>
-                    Max Stock
-                  </label>
-                  <input
-                    type="number"
-                    value={form.maxStock}
-                    onChange={(e) => setForm({ ...form, maxStock: e.target.value })}
-                    placeholder="0"
-                    min="0"
-                    style={{
-                      width: '100%', padding: '10px 14px',
-                      border: '1.5px solid #E2E8F0', borderRadius: '10px',
-                      fontSize: '14px', outline: 'none', fontFamily: 'Inter, sans-serif',
-                    }}
-                    onFocus={(e) => e.target.style.borderColor = '#2E86AB'}
-                    onBlur={(e) => e.target.style.borderColor = '#E2E8F0'}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: '12px', marginTop: '24px' }}>
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  style={{
-                    flex: 1, padding: '12px', background: '#F1F5F9',
-                    color: '#64748B', border: 'none', borderRadius: '10px',
-                    fontSize: '14px', fontWeight: 600, cursor: 'pointer',
-                    fontFamily: 'Inter, sans-serif',
-                  }}
-                >Cancel</button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  style={{
-                    flex: 1, padding: '12px',
-                    background: submitting ? '#94A3B8' : '#1E3A5F',
-                    color: '#fff', border: 'none', borderRadius: '10px',
-                    fontSize: '14px', fontWeight: 600,
-                    cursor: submitting ? 'not-allowed' : 'pointer',
-                    fontFamily: 'Inter, sans-serif',
-                  }}
-                >
-                  {submitting ? 'Saving...' : (editingProduct ? 'Update' : 'Create')}
-                </button>
-              </div>
-            </form>
+              </Select>
+            )}
+          </Field>
+          <Field label="Brand">
+            {(id) => (
+              <Select id={id} value={form.brandId} onChange={(e) => set('brandId', e.target.value)}>
+                <option value="">No brand</option>
+                {brands.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <Field label="Cost price (PKR)" hint="What you pay the supplier">
+            {(id) => <Input id={id} type="number" inputMode="decimal" min="0" value={form.purchasePrice} onChange={(e) => set('purchasePrice', e.target.value)} className="num" />}
+          </Field>
+          <Field label="Sale price (PKR)" hint={form.salePrice && form.purchasePrice ? `Profit per unit: ${money(margin)}` : 'What the customer pays'}>
+            {(id) => <Input id={id} type="number" inputMode="decimal" min="0" value={form.salePrice} onChange={(e) => set('salePrice', e.target.value)} className="num" />}
+          </Field>
+          <Field label="Unit">
+            {(id) => (
+              <Select id={id} value={form.unit} onChange={(e) => set('unit', e.target.value)}>
+                {UNITS.map((u) => (
+                  <option key={u} value={u}>{u}</option>
+                ))}
+              </Select>
+            )}
+          </Field>
+          <div className="grid grid-cols-2 gap-4">
+            <Field label="Low stock alert" hint="Warn at or below">
+              {(id) => <Input id={id} type="number" min="0" value={form.minStock} onChange={(e) => set('minStock', e.target.value)} className="num" />}
+            </Field>
+            <Field label="Maximum stock">
+              {(id) => <Input id={id} type="number" min="0" value={form.maxStock} onChange={(e) => set('maxStock', e.target.value)} className="num" />}
+            </Field>
           </div>
-        </div>
-      )}
+          <button type="submit" className="hidden" />
+        </form>
+      </Modal>
+
+      {confirmDialog}
     </TenantLayout>
   )
 }

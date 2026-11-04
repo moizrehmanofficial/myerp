@@ -1,137 +1,153 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { CalendarCheck } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import { Card, Field, Select, Spinner, Stat, Table, TableWrap, Th, Td, Tr, EmptyState } from '@/components/ui'
+import { MONTHS, MonthBar } from '@/components/reports/ReportBits'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { cn } from '@/utils/utils'
+
+// Present days (half days count half) out of the days that were marked
+function rate(e: any) {
+  const marked = e.present + e.absent + e.halfDay + e.onLeave
+  return marked ? Math.round(((e.present + e.halfDay / 2) / marked) * 100) : null
+}
 
 export default function AttendanceReportPage() {
+  const now = new Date()
+  const [period, setPeriod] = useState({ month: now.getMonth() + 1, year: now.getFullYear() })
+  const [dept, setDept] = useState('')
+  const [departments, setDepartments] = useState<string[]>([])
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
-  const now = new Date()
-  const [month, setMonth] = useState(now.getMonth() + 1)
-  const [year, setYear] = useState(now.getFullYear())
-  const [department, setDepartment] = useState('')
 
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchReport(sub, now.getMonth() + 1, now.getFullYear(), '')
-  }, [])
-
-  async function fetchReport(sub: string, m: number, y: number, dept: string) {
+  const load = useCallback(async (m: number, y: number, d: string) => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({ month: String(m), year: String(y), ...(dept && { department: dept }) })
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/reports/attendance?${params}`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const q = new URLSearchParams({ month: String(m), year: String(y) })
+      if (d) q.set('department', d)
+      const res = await tenantApi.get(`/erp/reports/attendance?${q}`)
       setData(res.data.data)
-    } catch { toast.error('Failed to load report') }
-    finally { setLoading(false) }
-  }
+      if (!d) setDepartments([...new Set<string>((res.data.data?.employees || []).map((e: any) => e.department).filter(Boolean))].sort())
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load the attendance report.'))
+    } finally {
+      setLoading(false)
+    }
+  }, [])
 
-  const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' })
+  useEffect(() => {
+    load(period.month, period.year, '')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const rows: any[] = data?.employees || []
+  const sum = (k: string) => rows.reduce((s, e) => s + Number(e[k] || 0), 0)
+  const label = `${MONTHS[period.month - 1]} ${period.year}`
+  const overall = rate({ present: sum('present'), absent: sum('absent'), halfDay: sum('halfDay'), onLeave: sum('onLeave') })
 
   return (
     <TenantLayout
-      title="Attendance Report"
-      subtitle="Monthly attendance summary by employee"
+      title="Attendance report"
+      subtitle="Days present, absent and on leave for each employee"
       requiredModule="reports"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <select value={month} onChange={(e) => setMonth(+e.target.value)}
-            style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-              <option key={m} value={m}>{new Date(2024, m - 1).toLocaleString('default', { month: 'long' })}</option>
-            ))}
-          </select>
-          <select value={year} onChange={(e) => setYear(+e.target.value)}
-            style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif', background: '#fff' }}>
-            {[2024, 2025, 2026, 2027].map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-          <button onClick={() => fetchReport(subdomain, month, year, department)}
-            style={{ padding: '8px 16px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Apply</button>
-          <ExportButton
-            data={data?.employees || []}
-            filename={`attendance-${monthName}-${year}`}
-            title={`Attendance Report — ${monthName} ${year}`}
-            subtitle={`${subdomain} ERP`}
-            columns={[
-              { header: 'Code', value: (r) => r.employeeCode, width: 12 },
-              { header: 'Employee', value: (r) => r.name, width: 25 },
-              { header: 'Department', value: (r) => r.department || '', width: 18 },
-              { header: 'Present', value: (r) => r.present, width: 10 },
-              { header: 'Absent', value: (r) => r.absent, width: 10 },
-              { header: 'Half Day', value: (r) => r.halfDay, width: 10 },
-              { header: 'On Leave', value: (r) => r.onLeave, width: 10 },
-              { header: 'Rate %', value: (r) => r.attendanceRate, width: 10 },
-            ]}
-            disabled={!data}
-          />
-        </div>
+        <ExportButton
+          data={rows}
+          filename={`attendance-${period.year}-${period.month}`}
+          title={`Attendance: ${label}`}
+          disabled={!data}
+          columns={[
+            { header: 'Employee', value: (r: any) => r.name, width: 26 },
+            { header: 'Code', value: (r: any) => r.employeeCode || '', width: 12 },
+            { header: 'Department', value: (r: any) => r.department || '', width: 18 },
+            { header: 'Present', value: (r: any) => r.present, width: 10 },
+            { header: 'Half day', value: (r: any) => r.halfDay, width: 10 },
+            { header: 'Leave', value: (r: any) => r.onLeave, width: 10 },
+            { header: 'Absent', value: (r: any) => r.absent, width: 10 },
+            { header: 'Attendance %', value: (r: any) => rate(r) ?? '', width: 14 },
+          ]}
+        />
       }
     >
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <>
-          <div style={{ padding: '12px 16px', background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '10px', marginBottom: '20px', fontSize: '13px', color: '#1D4ED8', fontWeight: 600 }}>
-            📅 {monthName} {year} — {data?.daysInMonth} working days
-          </div>
-
-          {(!data?.employees || data.employees.length === 0) ? (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '60px', textAlign: 'center' }}>
-              <p style={{ color: '#94A3B8' }}>No employees found</p>
-            </div>
-          ) : (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                    {['Code', 'Employee', 'Department', 'Present', 'Absent', 'Half Day', 'On Leave', 'Rate'].map((h) => (
-                      <th key={h} style={{ padding: '12px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.employees.map((emp: any, i: number) => (
-                    <tr key={emp.id} style={{ borderBottom: i < data.employees.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                    >
-                      <td style={{ padding: '12px 14px' }}>
-                        <span style={{ fontFamily: 'monospace', fontSize: '12px', background: '#F1F5F9', padding: '2px 6px', borderRadius: '4px' }}>{emp.employeeCode}</span>
-                      </td>
-                      <td style={{ padding: '12px 14px', fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>{emp.name}</td>
-                      <td style={{ padding: '12px 14px', fontSize: '12px', color: '#64748B' }}>{emp.department || '—'}</td>
-                      <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 700, color: '#16A34A' }}>{emp.present}</td>
-                      <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 700, color: '#DC2626' }}>{emp.absent}</td>
-                      <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 700, color: '#EA580C' }}>{emp.halfDay}</td>
-                      <td style={{ padding: '12px 14px', fontSize: '14px', fontWeight: 700, color: '#1D4ED8' }}>{emp.onLeave}</td>
-                      <td style={{ padding: '12px 14px' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <div style={{ flex: 1, height: '6px', background: '#E2E8F0', borderRadius: '99px', overflow: 'hidden', maxWidth: '60px' }}>
-                            <div style={{ height: '100%', width: `${emp.attendanceRate}%`, background: emp.attendanceRate >= 80 ? '#16A34A' : emp.attendanceRate >= 60 ? '#EA580C' : '#DC2626', borderRadius: '99px' }} />
-                          </div>
-                          <span style={{ fontSize: '12px', fontWeight: 700, color: emp.attendanceRate >= 80 ? '#16A34A' : emp.attendanceRate >= 60 ? '#EA580C' : '#DC2626' }}>{emp.attendanceRate}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+      <div className="flex flex-col gap-5">
+        <MonthBar month={period.month} year={period.year} onApply={(m, y) => { setPeriod({ month: m, year: y }); load(m, y, dept) }}>
+          {departments.length > 0 && (
+            <Field label="Department" className="w-48">
+              {(id) => (
+                <Select id={id} value={dept} onChange={(e) => { setDept(e.target.value); load(period.month, period.year, e.target.value) }}>
+                  <option value="">All departments</option>
+                  {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+                </Select>
+              )}
+            </Field>
           )}
-        </>
-      )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </MonthBar>
+        {loading && !data ? (
+          <Spinner label="Loading attendance" />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+              <Stat label="Employees" value={rows.length} sub={label} />
+              <Stat label="Attendance" value={overall === null ? '—' : `${overall}%`} sub="Of the days marked" />
+              <Stat label="Days absent" value={sum('absent')} />
+              <Stat label="Days on leave" value={sum('onLeave')} />
+            </div>
+            <Card>
+              {rows.length === 0 ? (
+                <EmptyState icon={<CalendarCheck />} title="No active employees" />
+              ) : (
+                <TableWrap>
+                  <Table>
+                    <thead>
+                      <tr>
+                        <Th>Employee</Th>
+                        <Th align="right">Present</Th>
+                        <Th align="right" className="hidden sm:table-cell">Half day</Th>
+                        <Th align="right" className="hidden sm:table-cell">Leave</Th>
+                        <Th align="right">Absent</Th>
+                        <Th className="w-44">Attendance</Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((e) => {
+                        const r = rate(e)
+                        return (
+                          <Tr key={e.id}>
+                            <Td>
+                              <p className="font-medium">{e.name}</p>
+                              <p className="text-xs text-ink-3">{[e.employeeCode, e.department].filter(Boolean).join(', ')}</p>
+                            </Td>
+                            <Td align="right">{e.present}</Td>
+                            <Td align="right" className="hidden sm:table-cell">{e.halfDay}</Td>
+                            <Td align="right" className="hidden sm:table-cell">{e.onLeave}</Td>
+                            <Td align="right" className={e.absent ? 'text-bad' : ''}>{e.absent}</Td>
+                            <Td>
+                              {r === null ? (
+                                <span className="text-xs text-ink-3">Not marked</span>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-subtle">
+                                    <div className={cn('h-full rounded-full', r >= 90 ? 'bg-good' : r >= 75 ? 'bg-warn' : 'bg-bad')} style={{ width: `${r}%` }} />
+                                  </div>
+                                  <span className="num w-10 text-right text-xs font-medium text-ink-2">{r}%</span>
+                                </div>
+                              )}
+                            </Td>
+                          </Tr>
+                        )
+                      })}
+                    </tbody>
+                  </Table>
+                </TableWrap>
+              )}
+            </Card>
+          </>
+        )}
+      </div>
     </TenantLayout>
   )
 }

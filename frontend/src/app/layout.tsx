@@ -1,21 +1,21 @@
-import type { Metadata } from 'next'
+import type { Metadata, Viewport } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'MyERP — Super Admin',
-  description: 'Multi-Tenant ERP SaaS Platform',
+  title: 'MyERP',
+  description: 'Business management for sales, stock, accounts and HR',
 }
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode
-}) {
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  themeColor: '#16263f',
+}
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body style={{ fontFamily: 'Inter, sans-serif' }}>
-        {children}
-      </body>
+      <body>{children}</body>
     </html>
   )
 }

@@ -1,115 +1,122 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
+import { ShoppingCart } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
-
-function getDefaultDates() {
-  const to = new Date()
-  const from = new Date()
-  from.setDate(from.getDate() - 30)
-  return {
-    from: from.toISOString().split('T')[0],
-    to: to.toISOString().split('T')[0],
-  }
-}
+import ExportButton from '@/components/common/ExportButton'
+import { Card, CardHeader, Spinner, Stat, Table, TableWrap, Th, Td, Tr, EmptyState } from '@/components/ui'
+import { BarChart, DateRangeBar, dayLabel, presetRange, type Range } from '@/components/reports/ReportBits'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { money, number, date } from '@/lib/format'
 
 export default function PurchaseReportPage() {
-  const [subdomain, setSubdomain] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [range, setRange] = useState<Range>(() => presetRange('month'))
   const [data, setData] = useState<any>(null)
-  const defaults = getDefaultDates()
-  const [from, setFrom] = useState(defaults.from)
-  const [to, setTo] = useState(defaults.to)
+  const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchReport(sub, defaults.from, defaults.to)
-  }, [])
-
-  async function fetchReport(sub: string, f: string, t: string) {
+  const load = useCallback(async (r: Range) => {
     setLoading(true)
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/reports/purchase?from=${f}&to=${t}T23:59:59`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const res = await tenantApi.get(`/erp/reports/purchase?from=${r.from}&to=${r.to}`)
       setData(res.data.data)
-    } catch {
-      toast.error('Failed to load report')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load the purchase report.'))
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
-  const s = data?.summary
+  useEffect(() => {
+    load(range)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const s = data?.summary || {}
+  const rows: any[] = data?.bySupplier || []
+  const daily = (data?.dailyPurchases || []).map((x: any) => ({ label: dayLabel(x.date), value: Number(x.total), title: `${date(x.date)}: ${money(x.total)} in ${x.count} order${x.count === 1 ? '' : 's'}` }))
+  const avg = Number(s.totalOrders) ? Number(s.totalPurchases) / Number(s.totalOrders) : 0
 
   return (
     <TenantLayout
-      title="Purchase Report"
-      subtitle="Stock buying overview by supplier"
+      title="Purchase report"
+      subtitle="Purchase orders placed and the suppliers you buy from most"
       requiredModule="reports"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <span style={{ color: '#94A3B8', fontSize: '13px' }}>to</span>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-          <button onClick={() => fetchReport(subdomain, from, to)} style={{ padding: '8px 16px', background: '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>Apply</button>
-        </div>
+        <ExportButton
+          data={rows}
+          filename={`purchases-${range.from}-${range.to}`}
+          title="Purchases by supplier"
+          subtitle={`${date(range.from)} to ${date(range.to)}. Total ${money(s.totalPurchases)}`}
+          disabled={!data}
+          columns={[
+            { header: 'Supplier', value: (r: any) => r.name, width: 30 },
+            { header: 'Orders', value: (r: any) => r.orderCount, width: 10 },
+            { header: 'Amount (PKR)', value: (r: any) => Number(r.totalSpent || 0).toFixed(2), width: 18 },
+          ]}
+        />
       }
     >
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-        </div>
-      ) : (
-        <>
-          {/* Summary */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '16px', marginBottom: '24px', maxWidth: '600px' }}>
-            <div style={{ background: '#fff', borderRadius: '14px', padding: '18px 20px', border: '1px solid #E2E8F0' }}>
-              <div style={{ width: '38px', height: '38px', background: '#EFF6FF', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', marginBottom: '12px' }}>🛒</div>
-              <p style={{ fontSize: '20px', fontWeight: 800, color: '#1D4ED8', marginBottom: '4px' }}>{(s?.totalOrders || 0).toLocaleString()}</p>
-              <p style={{ fontSize: '12px', fontWeight: 600, color: '#374151' }}>Total Purchase Orders</p>
+      <div className="flex flex-col gap-5">
+        <DateRangeBar initial={range} onApply={(r) => { setRange(r); load(r) }} />
+        {loading && !data ? (
+          <Spinner label="Loading purchases" />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+              <Stat label="Purchase orders" value={number(s.totalOrders)} sub="Cancelled orders not counted" />
+              <Stat label="Total ordered" value={money(s.totalPurchases)} />
+              <Stat label="Average order" value={money(avg)} className="col-span-2 lg:col-span-1" />
             </div>
-            <div style={{ background: '#fff', borderRadius: '14px', padding: '18px 20px', border: '1px solid #E2E8F0' }}>
-              <div style={{ width: '38px', height: '38px', background: '#FFF7ED', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px', marginBottom: '12px' }}>💰</div>
-              <p style={{ fontSize: '20px', fontWeight: 800, color: '#EA580C', marginBottom: '4px' }}>PKR {(s?.totalPurchases || 0).toLocaleString()}</p>
-              <p style={{ fontSize: '12px', fontWeight: 600, color: '#374151' }}>Total Spent on Stock</p>
-            </div>
-          </div>
-
-          {/* By Supplier */}
-          <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden', maxWidth: '700px' }}>
-            <div style={{ padding: '18px 20px', borderBottom: '1px solid #F1F5F9' }}>
-              <h3 style={{ fontSize: '14px', fontWeight: 700, color: '#0F172A' }}>🏭 Spending by Supplier</h3>
-            </div>
-            {(!data?.bySupplier || data.bySupplier.length === 0) ? (
-              <div style={{ padding: '40px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>No purchases in this period</div>
-            ) : (
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <tbody>
-                  {data.bySupplier.map((sup: any, i: number) => (
-                    <tr key={i} style={{ borderBottom: i < data.bySupplier.length - 1 ? '1px solid #F8FAFC' : 'none' }}>
-                      <td style={{ padding: '12px 20px', fontSize: '12px', color: '#94A3B8', fontWeight: 700, width: '30px' }}>#{i + 1}</td>
-                      <td style={{ padding: '12px 0' }}>
-                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>{sup.name}</div>
-                        <div style={{ fontSize: '11px', color: '#94A3B8' }}>{sup.phone || ''} • {sup.orderCount} orders</div>
-                      </td>
-                      <td style={{ padding: '12px 20px', textAlign: 'right', fontSize: '13px', fontWeight: 700, color: '#EA580C' }}>
-                        PKR {sup.totalSpent.toLocaleString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        </>
-      )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+            <Card>
+              <CardHeader title="Purchases by day" />
+              <BarChart data={daily} label="Purchases by day" empty="No purchase orders in these dates." />
+            </Card>
+            <Card>
+              <CardHeader title="By supplier" description="Top 10 by amount" />
+              {rows.length === 0 ? (
+                <EmptyState icon={<ShoppingCart />} title="No purchases in these dates" />
+              ) : (
+                <TableWrap>
+                  <Table>
+                    <thead>
+                      <tr>
+                        <Th>Supplier</Th>
+                        <Th align="right">Orders</Th>
+                        <Th align="right">Amount</Th>
+                        <Th align="right" className="hidden sm:table-cell">Share</Th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => {
+                        const share = Number(s.totalPurchases) ? (Number(r.totalSpent) / Number(s.totalPurchases)) * 100 : 0
+                        return (
+                          <Tr key={i}>
+                            <Td>
+                              <p className="font-medium">{r.name}</p>
+                              {r.phone && <p className="text-xs text-ink-3">{r.phone}</p>}
+                            </Td>
+                            <Td align="right">{number(r.orderCount)}</Td>
+                            <Td align="right" className="font-medium">{money(r.totalSpent)}</Td>
+                            <Td align="right" className="hidden sm:table-cell">
+                              <div className="ml-auto flex w-36 items-center gap-2">
+                                <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-subtle">
+                                  <div className="h-full rounded-full bg-brand" style={{ width: `${share}%` }} />
+                                </div>
+                                <span className="w-11 text-xs text-ink-3">{share.toFixed(0)}%</span>
+                              </div>
+                            </Td>
+                          </Tr>
+                        )
+                      })}
+                    </tbody>
+                  </Table>
+                </TableWrap>
+              )}
+            </Card>
+          </>
+        )}
+      </div>
     </TenantLayout>
   )
 }

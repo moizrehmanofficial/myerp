@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
 import { ensureTenantUpgrades } from './tenant-doc.helper';
 import { naturalBalance, ACC } from './tenant-accounting.helper';
@@ -13,6 +13,7 @@ export class TenantReportsService {
   constructor(private tenantService: TenantService) {}
 
   async getSalesReport(slug: string, from: string, to: string) {
+    to = endOfDay(to);
     const client = await this.tenantService.getTenantClient(slug);
 
     const summary = await client.$queryRawUnsafe(
@@ -72,12 +73,14 @@ export class TenantReportsService {
   }
 
   async getPurchaseReport(slug: string, from: string, to: string) {
+    to = endOfDay(to);
     const client = await this.tenantService.getTenantClient(slug);
 
     const summary = await client.$queryRawUnsafe(
       `SELECT COUNT(*) as "totalOrders", COALESCE(SUM("totalAmount"), 0) as "totalPurchases"
        FROM "purchase_orders"
-       WHERE "isDeleted" = false AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp`,
+       WHERE "isDeleted" = false AND "status" != 'CANCELLED'
+         AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp`,
       from, to,
     ) as any[];
 
@@ -85,7 +88,7 @@ export class TenantReportsService {
       `SELECT s."name", s."phone", COUNT(po."id") as "orderCount", SUM(po."totalAmount") as "totalSpent"
        FROM "purchase_orders" po
        JOIN "suppliers" s ON po."supplierId" = s."id"
-       WHERE po."isDeleted" = false AND po."createdAt" >= $1::timestamp AND po."createdAt" <= $2::timestamp
+       WHERE po."isDeleted" = false AND po."status" != 'CANCELLED' AND po."createdAt" >= $1::timestamp AND po."createdAt" <= $2::timestamp
        GROUP BY s."id", s."name", s."phone"
        ORDER BY "totalSpent" DESC
        LIMIT 10`,
@@ -95,7 +98,7 @@ export class TenantReportsService {
     const dailyPurchases = await client.$queryRawUnsafe(
       `SELECT DATE("createdAt") as "date", COUNT(*) as "count", COALESCE(SUM("totalAmount"), 0) as "total"
        FROM "purchase_orders"
-       WHERE "isDeleted" = false AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp
+       WHERE "isDeleted" = false AND "status" != 'CANCELLED' AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp
        GROUP BY DATE("createdAt")
        ORDER BY "date" ASC`,
       from, to,
@@ -283,10 +286,11 @@ export class TenantReportsService {
 
   async getARReport(slug: string, asOf: string) {
     const client = await this.tenantService.getTenantClient(slug);
+    const asOfEnd = endOfDay(asOf);
 
     const invoices = await client.$queryRawUnsafe(
       `SELECT i.*, c."name" as "customerName", c."phone" as "customerPhone",
-        EXTRACT(DAY FROM (NOW() - i."createdAt")) as "ageDays"
+        GREATEST(EXTRACT(DAY FROM ($1::timestamp - i."createdAt")), 0) as "ageDays"
        FROM "invoices" i
        JOIN "customers" c ON i."customerId" = c."id"
        WHERE i."isDeleted" = false
@@ -294,7 +298,7 @@ export class TenantReportsService {
          AND i."dueAmount" > 0
          AND i."createdAt" <= $1::timestamp
        ORDER BY i."createdAt" ASC`,
-      asOf,
+      asOfEnd,
     ) as any[];
 
     const data = invoices.map((inv: any) => ({
@@ -306,50 +310,83 @@ export class TenantReportsService {
       agingBucket: this.getAgingBucket(Number(inv.ageDays || 0)),
     }));
 
-    const summary = {
-      current:   data.filter((i: any) => i.ageDays <= 30).reduce((s: number, i: any) => s + i.dueAmount, 0),
-      days31_60: data.filter((i: any) => i.ageDays > 30 && i.ageDays <= 60).reduce((s: number, i: any) => s + i.dueAmount, 0),
-      days61_90: data.filter((i: any) => i.ageDays > 60 && i.ageDays <= 90).reduce((s: number, i: any) => s + i.dueAmount, 0),
-      over90:    data.filter((i: any) => i.ageDays > 90).reduce((s: number, i: any) => s + i.dueAmount, 0),
-      total:     data.reduce((s: number, i: any) => s + i.dueAmount, 0),
-    };
-
-    return { success: true, data: { invoices: data, summary } };
+    return { success: true, data: { invoices: data, summary: this.agingSummary(data, 'dueAmount') } };
   }
 
+  // What we owe suppliers = their balance. Payments are not linked to a
+  // purchase order, so the balance is matched to the newest received orders
+  // first (older ones count as paid) to show how old the debt is.
   async getAPReport(slug: string, asOf: string) {
     const client = await this.tenantService.getTenantClient(slug);
+    const asOfEnd = endOfDay(asOf);
 
-    const orders = await client.$queryRawUnsafe(
-      `SELECT po.*, s."name" as "supplierName", s."phone" as "supplierPhone",
-        EXTRACT(DAY FROM (NOW() - po."createdAt")) as "ageDays"
-       FROM "purchase_orders" po
-       JOIN "suppliers" s ON po."supplierId" = s."id"
-       WHERE po."isDeleted" = false
-         AND po."status" != 'CANCELLED'
-         AND po."createdAt" <= $1::timestamp
-       ORDER BY po."createdAt" ASC`,
-      asOf,
-    ) as any[];
+    const suppliers = (await client.$queryRawUnsafe(
+      `SELECT "id", "name", "phone", "balance" FROM "suppliers"
+       WHERE "isDeleted" = false AND "balance" > 0
+       ORDER BY "balance" DESC`,
+    )) as any[];
 
-    const data = orders.map((o: any) => ({
-      ...o,
-      ageDays: Number(o.ageDays || 0),
-      totalAmount: Number(o.totalAmount || 0),
-      agingBucket: this.getAgingBucket(Number(o.ageDays || 0)),
-    }));
+    const orders = suppliers.length
+      ? ((await client.$queryRawUnsafe(
+          `SELECT "id", "orderNumber", "supplierId", "totalAmount", "createdAt",
+             GREATEST(EXTRACT(DAY FROM ($1::timestamp - "createdAt")), 0) as "ageDays"
+           FROM "purchase_orders"
+           WHERE "isDeleted" = false AND COALESCE("isPosted", false) = true
+             AND "createdAt" <= $1::timestamp
+           ORDER BY "createdAt" DESC`,
+          asOfEnd,
+        )) as any[])
+      : [];
 
-    const summary = {
-      current:   data.filter((o: any) => o.ageDays <= 30).reduce((s: number, o: any) => s + o.totalAmount, 0),
-      days31_60: data.filter((o: any) => o.ageDays > 30 && o.ageDays <= 60).reduce((s: number, o: any) => s + o.totalAmount, 0),
-      days61_90: data.filter((o: any) => o.ageDays > 60 && o.ageDays <= 90).reduce((s: number, o: any) => s + o.totalAmount, 0),
-      over90:    data.filter((o: any) => o.ageDays > 90).reduce((s: number, o: any) => s + o.totalAmount, 0),
-      total:     data.reduce((s: number, o: any) => s + o.totalAmount, 0),
+    const rows: any[] = [];
+    for (const s of suppliers) {
+      let left = Number(s.balance);
+      for (const o of orders.filter((x: any) => x.supplierId === s.id)) {
+        if (left <= 0.004) break;
+        const owed = Math.min(left, Number(o.totalAmount));
+        rows.push({
+          id: o.id,
+          supplierId: s.id,
+          supplierName: s.name,
+          supplierPhone: s.phone,
+          orderNumber: o.orderNumber,
+          createdAt: o.createdAt,
+          totalAmount: Number(o.totalAmount),
+          dueAmount: Math.round(owed * 100) / 100,
+          ageDays: Number(o.ageDays || 0),
+          agingBucket: this.getAgingBucket(Number(o.ageDays || 0)),
+        });
+        left -= owed;
+      }
+      // Opening balance or anything not tied to an order
+      if (left > 0.004) {
+        rows.push({
+          id: `${s.id}-other`,
+          supplierId: s.id,
+          supplierName: s.name,
+          supplierPhone: s.phone,
+          orderNumber: null,
+          createdAt: null,
+          totalAmount: Math.round(left * 100) / 100,
+          dueAmount: Math.round(left * 100) / 100,
+          ageDays: 999,
+          agingBucket: this.getAgingBucket(999),
+        });
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        orders: rows,
+        suppliers: suppliers.map((s: any) => ({ ...s, balance: Number(s.balance) })),
+        summary: this.agingSummary(rows, 'dueAmount'),
+      },
     };
-
-    return { success: true, data: { orders: data, summary } };
   }
 
+  // Everything that changed a customer's balance: invoices, money received,
+  // refunds and sale returns. Starts from the balance before "from".
   async getCustomerLedger(slug: string, customerId: string, from: string, to: string) {
     const client = await this.tenantService.getTenantClient(slug);
 
@@ -357,40 +394,35 @@ export class TenantReportsService {
       `SELECT * FROM "customers" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1`,
       customerId,
     ) as any[];
+    if (!customers.length) throw new NotFoundException('Customer not found');
 
-    if (!customers.length) throw new Error('Customer not found');
-
-    const invoices = await client.$queryRawUnsafe(
-      `SELECT 'INVOICE' as "type", "invoiceNumber" as "reference",
-        "createdAt" as "date", "totalAmount" as "debit",
-        "paidAmount" as "credit", "paymentStatus" as "status"
-       FROM "invoices"
-       WHERE "customerId" = $1::uuid AND "isDeleted" = false
-         AND "createdAt" >= $2::timestamp AND "createdAt" <= $3::timestamp
-       ORDER BY "createdAt" ASC`,
-      customerId, from, to,
-    ) as any[];
-
-    let runningBalance = 0;
-    const entries = invoices.map((entry: any) => {
-      const debit = Number(entry.debit || 0);
-      const credit = Number(entry.credit || 0);
-      runningBalance += debit - credit;
-      return { ...entry, debit, credit, runningBalance };
-    });
+    // debit = customer owes more, credit = owes less
+    const moves = (await client.$queryRawUnsafe(
+      `SELECT * FROM (
+         SELECT 'INVOICE' AS "type", "invoiceNumber" AS "reference", "createdAt" AS "date",
+                "totalAmount" AS "debit", 0 AS "credit", 'Invoice' AS "details"
+         FROM "invoices" WHERE "customerId" = $1::uuid AND "isDeleted" = false
+         UNION ALL
+         SELECT CASE WHEN "type" = 'RECEIPT' THEN 'RECEIPT' ELSE 'REFUND' END, "reference", "createdAt",
+                CASE WHEN "type" = 'PAYMENT' THEN "amount" ELSE 0 END,
+                CASE WHEN "type" = 'RECEIPT' THEN "amount" ELSE 0 END,
+                COALESCE("notes", CASE WHEN "type" = 'RECEIPT' THEN 'Payment received' ELSE 'Refund paid' END)
+         FROM "payments" WHERE "customerId" = $1::uuid
+         UNION ALL
+         SELECT 'RETURN', "returnNumber", "createdAt", 0, "totalAmount", COALESCE("reason", 'Goods returned')
+         FROM "sale_returns" WHERE "customerId" = $1::uuid
+       ) m ORDER BY "date" ASC`,
+      customerId,
+    )) as any[];
 
     return {
       success: true,
-      data: {
-        customer: customers[0],
-        entries,
-        totalDebit: entries.reduce((s: number, e: any) => s + e.debit, 0),
-        totalCredit: entries.reduce((s: number, e: any) => s + e.credit, 0),
-        closingBalance: runningBalance,
-      },
+      data: { customer: customers[0], ...this.partyLedger(moves, Number(customers[0].balance || 0), from, to) },
     };
   }
 
+  // Everything that changed what we owe a supplier: received purchases,
+  // payments, refunds and purchase returns
   async getSupplierLedger(slug: string, supplierId: string, from: string, to: string) {
     const client = await this.tenantService.getTenantClient(slug);
 
@@ -398,41 +430,93 @@ export class TenantReportsService {
       `SELECT * FROM "suppliers" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1`,
       supplierId,
     ) as any[];
+    if (!suppliers.length) throw new NotFoundException('Supplier not found');
 
-    if (!suppliers.length) throw new Error('Supplier not found');
+    // credit = we owe more, debit = we owe less (shown from our side)
+    const moves = (await client.$queryRawUnsafe(
+      `SELECT * FROM (
+         SELECT 'PURCHASE' AS "type", "orderNumber" AS "reference", "createdAt" AS "date",
+                0 AS "debit", "totalAmount" AS "credit", 'Goods received' AS "details"
+         FROM "purchase_orders"
+         WHERE "supplierId" = $1::uuid AND "isDeleted" = false AND COALESCE("isPosted", false) = true
+         UNION ALL
+         SELECT CASE WHEN "type" = 'PAYMENT' THEN 'PAYMENT' ELSE 'REFUND' END, "reference", "createdAt",
+                CASE WHEN "type" = 'PAYMENT' THEN "amount" ELSE 0 END,
+                CASE WHEN "type" = 'RECEIPT' THEN "amount" ELSE 0 END,
+                COALESCE("notes", CASE WHEN "type" = 'PAYMENT' THEN 'Payment made' ELSE 'Refund received' END)
+         FROM "payments" WHERE "supplierId" = $1::uuid
+         UNION ALL
+         SELECT 'RETURN', "returnNumber", "createdAt", "totalAmount", 0, COALESCE("reason", 'Goods returned')
+         FROM "purchase_returns" WHERE "supplierId" = $1::uuid
+       ) m ORDER BY "date" ASC`,
+      supplierId,
+    )) as any[];
 
-    const orders = await client.$queryRawUnsafe(
-      `SELECT 'PURCHASE' as "type", "orderNumber" as "reference",
-        "createdAt" as "date", "totalAmount" as "debit",
-        0 as "credit", "status"
-       FROM "purchase_orders"
-       WHERE "supplierId" = $1::uuid AND "isDeleted" = false
-         AND "createdAt" >= $2::timestamp AND "createdAt" <= $3::timestamp
-       ORDER BY "createdAt" ASC`,
-      supplierId, from, to,
-    ) as any[];
+    // For suppliers the balance grows with credits, so flip the sign
+    const flipped = moves.map((m: any) => ({ ...m, debit: m.credit, credit: m.debit, _flip: true }));
+    const result = this.partyLedger(flipped, Number(suppliers[0].balance || 0), from, to);
+    result.entries = result.entries.map((e: any) => ({ ...e, debit: e.credit, credit: e.debit }));
+    const t = result.totalDebit;
+    result.totalDebit = result.totalCredit;
+    result.totalCredit = t;
 
-    let runningBalance = 0;
-    const entries = orders.map((entry: any) => {
-      const debit = Number(entry.debit || 0);
-      const credit = Number(entry.credit || 0);
-      runningBalance += debit - credit;
-      return { ...entry, debit, credit, runningBalance };
+    return { success: true, data: { supplier: suppliers[0], ...result } };
+  }
+
+  // Shared: opening balance, running balance, closing balance.
+  // Anything the records can't explain (e.g. a starting balance typed in when
+  // the contact was created) is carried as "balance brought forward".
+  private partyLedger(moves: any[], currentBalance: number, from?: string, to?: string) {
+    const fromTs = from ? new Date(from).getTime() : -Infinity;
+    const toTs = to ? new Date(endOfDay(to)).getTime() : Infinity;
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+
+    const all = moves.map((m: any) => ({
+      type: m.type,
+      reference: m.reference,
+      details: m.details,
+      date: m.date,
+      debit: Number(m.debit || 0),
+      credit: Number(m.credit || 0),
+    }));
+    const net = (list: any[]) => list.reduce((s, m) => s + m.debit - m.credit, 0);
+    const broughtForward = r2(currentBalance - net(all));
+
+    const before = all.filter((m) => new Date(m.date).getTime() < fromTs);
+    const inRange = all.filter((m) => {
+      const t = new Date(m.date).getTime();
+      return t >= fromTs && t <= toTs;
+    });
+
+    const openingBalance = r2(broughtForward + net(before));
+    let running = openingBalance;
+    const entries = inRange.map((m) => {
+      running = r2(running + m.debit - m.credit);
+      return { ...m, runningBalance: running };
     });
 
     return {
-      success: true,
-      data: {
-        supplier: suppliers[0],
-        entries,
-        totalDebit: entries.reduce((s: number, e: any) => s + e.debit, 0),
-        totalCredit: entries.reduce((s: number, e: any) => s + e.credit, 0),
-        closingBalance: runningBalance,
-      },
+      openingBalance,
+      entries,
+      totalDebit: r2(inRange.reduce((s, m) => s + m.debit, 0)),
+      totalCredit: r2(inRange.reduce((s, m) => s + m.credit, 0)),
+      closingBalance: running,
+    };
+  }
+
+  private agingSummary(rows: any[], key: string) {
+    const sum = (f: (d: number) => boolean) => rows.filter((r) => f(r.ageDays)).reduce((s, r) => s + Number(r[key] || 0), 0);
+    return {
+      current: sum((d) => d <= 30),
+      days31_60: sum((d) => d > 30 && d <= 60),
+      days61_90: sum((d) => d > 60 && d <= 90),
+      over90: sum((d) => d > 90),
+      total: sum(() => true),
     };
   }
 
   async getStockMovementReport(slug: string, from: string, to: string, productId?: string) {
+    to = endOfDay(to);
     const client = await this.tenantService.getTenantClient(slug);
 
     let whereClause = `it."createdAt" >= $1::timestamp AND it."createdAt" <= $2::timestamp`;
@@ -479,6 +563,7 @@ export class TenantReportsService {
   }
 
   async getInvoiceReport(slug: string, from: string, to: string, status?: string) {
+    to = endOfDay(to);
     const client = await this.tenantService.getTenantClient(slug);
 
     let whereClause = `i."isDeleted" = false
@@ -533,6 +618,9 @@ export class TenantReportsService {
   }
 
   async getAttendanceReport(slug: string, month: number, year: number, department?: string) {
+    // Numbers only (they are put into the SQL text)
+    month = Math.min(Math.max(Math.trunc(Number(month)) || 1, 1), 12);
+    year = Math.trunc(Number(year)) || new Date().getFullYear();
     const client = await this.tenantService.getTenantClient(slug);
 
     let whereClause = `e."isDeleted" = false AND e."status" = 'ACTIVE'`;
@@ -578,6 +666,9 @@ export class TenantReportsService {
   }
 
   async getPayrollReport(slug: string, month: number, year: number, department?: string) {
+    // Numbers only (they are put into the SQL text)
+    month = Math.min(Math.max(Math.trunc(Number(month)) || 1, 1), 12);
+    year = Math.trunc(Number(year)) || new Date().getFullYear();
     const client = await this.tenantService.getTenantClient(slug);
 
     let whereClause = `p."month" = ${month} AND p."year" = ${year}`;

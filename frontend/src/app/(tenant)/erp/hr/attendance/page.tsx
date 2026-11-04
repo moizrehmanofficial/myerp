@@ -1,255 +1,270 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import axios from 'axios'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
+import { CalendarCheck, CheckCheck, ChevronLeft, ChevronRight } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
-import { getTenantSlug } from '@/lib/getTenantSlug'
+import ExportButton from '@/components/common/ExportButton'
+import { Button, Card, CardHeader, Input, Spinner, EmptyState, Tabs } from '@/components/ui'
+import { usePermission } from '@/hooks/usePermission'
+import { tenantApi, apiError } from '@/lib/tenantApi'
+import { isoDate, MONTHS } from '@/components/reports/ReportBits'
+import { cn } from '@/utils/utils'
 
-const STATUS_OPTIONS = ['PRESENT', 'ABSENT', 'HALF_DAY', 'LEAVE']
+type Status = 'PRESENT' | 'ABSENT' | 'HALF_DAY' | 'LEAVE'
 
-const STATUS_STYLES: Record<string, { bg: string; color: string; short: string }> = {
-  PRESENT:  { bg: '#F0FDF4', color: '#16A34A', short: 'P' },
-  ABSENT:   { bg: '#FEF2F2', color: '#DC2626', short: 'A' },
-  HALF_DAY: { bg: '#FFF7ED', color: '#EA580C', short: 'H' },
-  LEAVE:    { bg: '#EFF6FF', color: '#1D4ED8', short: 'L' },
-}
+const STATUSES: { key: Status; label: string; short: string; on: string; cell: string }[] = [
+  { key: 'PRESENT', label: 'Present', short: 'P', on: 'border-good bg-good-soft text-good', cell: 'bg-good-soft text-good' },
+  { key: 'HALF_DAY', label: 'Half day', short: 'H', on: 'border-warn bg-warn-soft text-warn', cell: 'bg-warn-soft text-warn' },
+  { key: 'LEAVE', label: 'Leave', short: 'L', on: 'border-info bg-info-soft text-info', cell: 'bg-info-soft text-info' },
+  { key: 'ABSENT', label: 'Absent', short: 'A', on: 'border-bad bg-bad-soft text-bad', cell: 'bg-bad-soft text-bad' },
+]
+const byKey = Object.fromEntries(STATUSES.map((s) => [s.key, s])) as Record<Status, (typeof STATUSES)[number]>
+
+const dayOf = (v: unknown) => String(v || '').slice(0, 10)
 
 export default function AttendancePage() {
+  const { canWrite } = usePermission()
+  const [day, setDay] = useState(() => isoDate(new Date()))
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [subdomain, setSubdomain] = useState('')
-  const [activeTab, setActiveTab] = useState<'mark' | 'summary'>('mark')
+  const [marks, setMarks] = useState<Record<string, Status>>({})
+  const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [tab, setTab] = useState<'day' | 'month'>('day')
 
-  const now = new Date()
-  const [month, setMonth] = useState(now.getMonth() + 1)
-  const [year, setYear] = useState(now.getFullYear())
-  const [selectedDate, setSelectedDate] = useState(now.toISOString().split('T')[0])
+  const [y, m] = day.split('-').map(Number)
 
-  const [attendanceMap, setAttendanceMap] = useState<Record<string, string>>({})
-
-  useEffect(() => {
-    const sub = getTenantSlug()
-    setSubdomain(sub)
-    fetchAttendance(sub, month, year)
-  }, [month, year])
-
-  async function fetchAttendance(sub: string, m: number, y: number) {
+  const load = useCallback(async (month: number, year: number) => {
     setLoading(true)
     try {
-      const res = await axios.get(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/attendance?month=${m}&year=${y}`,
-        { withCredentials: true, headers: { 'x-tenant-slug': sub } }
-      )
+      const res = await tenantApi.get(`/erp/hr/attendance?month=${month}&year=${year}`)
       setData(res.data.data)
-
-      // Build map for selected date
-      const map: Record<string, string> = {}
-      res.data.data.records?.forEach((r: any) => {
-        const d = r.date?.split('T')[0]
-        if (d === selectedDate) {
-          map[r.employeeId] = r.status
-        }
-      })
-      setAttendanceMap(map)
-    } catch {
-      toast.error('Failed to load attendance')
+    } catch (err) {
+      toast.error(apiError(err, 'Could not load attendance.'))
     } finally {
       setLoading(false)
     }
+  }, [])
+
+  useEffect(() => {
+    load(m, y)
+  }, [load, m, y])
+
+  // Marks already saved for the chosen day
+  useEffect(() => {
+    const map: Record<string, Status> = {}
+    for (const r of data?.records || []) if (dayOf(r.date) === day) map[r.employeeId] = r.status
+    setMarks(map)
+    setDirty(false)
+  }, [data, day])
+
+  const employees: any[] = data?.summary || []
+  const records: any[] = data?.records || []
+  const counts = STATUSES.map((s) => ({ ...s, n: Object.values(marks).filter((v) => v === s.key).length }))
+  const unmarked = employees.length - Object.keys(marks).length
+  const today = isoDate(new Date())
+
+  function shift(days: number) {
+    const d = new Date(`${day}T12:00:00`)
+    d.setDate(d.getDate() + days)
+    const next = isoDate(d)
+    if (next <= today) setDay(next)
   }
 
-  function updateStatus(empId: string, status: string) {
-    setAttendanceMap((prev) => ({ ...prev, [empId]: status }))
+  function mark(id: string, s: Status) {
+    setMarks((x) => ({ ...x, [id]: s }))
+    setDirty(true)
   }
 
-  async function saveBulkAttendance() {
-    const records = Object.entries(attendanceMap).map(([employeeId, status]) => ({
-      employeeId, status,
-    }))
-
-    if (records.length === 0) { toast.error('No attendance to save'); return }
-
+  async function save() {
+    const list = Object.entries(marks).map(([employeeId, status]) => ({ employeeId, status }))
+    if (!list.length) return toast.error('Mark at least one employee first.')
     setSaving(true)
     try {
-      await axios.post(
-        `${process.env.NEXT_PUBLIC_API_URL}/erp/hr/attendance/bulk`,
-        { date: selectedDate, records },
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
-      )
-      toast.success('Attendance saved!')
-      fetchAttendance(subdomain, month, year)
-    } catch {
-      toast.error('Failed to save attendance')
+      await tenantApi.post('/erp/hr/attendance/bulk', { date: day, records: list })
+      toast.success(`Attendance saved for ${new Date(`${day}T12:00:00`).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`)
+      load(m, y)
+    } catch (err) {
+      toast.error(apiError(err, 'Could not save attendance.'))
     } finally {
       setSaving(false)
     }
   }
 
-  // Get all active employees from summary
-  const employees = data?.summary || []
+  // Month grid: employee → day → status
+  const daysInMonth = new Date(y, m, 0).getDate()
+  const grid = useMemo(() => {
+    const g: Record<string, Record<number, Status>> = {}
+    for (const r of records) {
+      const d = Number(dayOf(r.date).slice(8, 10))
+      ;(g[r.employeeId] ||= {})[d] = r.status
+    }
+    return g
+  }, [records])
+
+  const pretty = new Date(`${day}T12:00:00`).toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })
 
   return (
     <TenantLayout
       title="Attendance"
-      subtitle="Track employee attendance"
+      subtitle="Mark who came in each day"
       requiredModule="hr"
       headerRight={
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <select value={month} onChange={(e) => setMonth(+e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }}>
-            {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-              <option key={m} value={m}>{new Date(2024, m - 1).toLocaleString('default', { month: 'long' })}</option>
-            ))}
-          </select>
-          <select value={year} onChange={(e) => setYear(+e.target.value)} style={{ padding: '8px 10px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }}>
-            {[2024, 2025, 2026, 2027].map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-        </div>
+        <ExportButton
+          data={employees}
+          filename={`attendance-${y}-${m}`}
+          title={`Attendance: ${MONTHS[m - 1]} ${y}`}
+          columns={[
+            { header: 'Employee', value: (r: any) => r.name, width: 26 },
+            { header: 'Code', value: (r: any) => r.employeeCode, width: 12 },
+            { header: 'Present', value: (r: any) => r.present, width: 10 },
+            { header: 'Half day', value: (r: any) => r.halfDay, width: 10 },
+            { header: 'Leave', value: (r: any) => r.onLeave, width: 10 },
+            { header: 'Absent', value: (r: any) => r.absent, width: 10 },
+          ]}
+        />
       }
     >
-      {/* Tabs */}
-      <div style={{ display: 'flex', gap: '4px', marginBottom: '20px', background: '#F1F5F9', padding: '4px', borderRadius: '10px', width: 'fit-content' }}>
-        {[{ key: 'mark', label: '✏️ Mark Attendance' }, { key: 'summary', label: '📊 Monthly Summary' }].map((tab) => (
-          <button key={tab.key} onClick={() => setActiveTab(tab.key as any)} style={{
-            padding: '8px 20px', borderRadius: '8px', border: 'none',
-            background: activeTab === tab.key ? '#fff' : 'transparent',
-            color: activeTab === tab.key ? '#0F172A' : '#64748B',
-            fontSize: '13px', fontWeight: activeTab === tab.key ? 700 : 500,
-            cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-            boxShadow: activeTab === tab.key ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-          }}>{tab.label}</button>
-        ))}
-      </div>
+      <Card>
+        <Tabs tabs={[{ key: 'day', label: 'Mark a day' }, { key: 'month', label: `${MONTHS[m - 1]} at a glance` }]} value={tab} onChange={setTab} />
 
-      {loading ? (
-        <div style={{ display: 'flex', justifyContent: 'center', padding: '80px' }}>
-          <div style={{ width: '40px', height: '40px', border: '3px solid #E2E8F0', borderTopColor: '#1E3A5F', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+        {/* Day picker */}
+        <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3 sm:px-5">
+          <Button variant="secondary" size="sm" onClick={() => shift(-1)} aria-label="Previous day"><ChevronLeft className="size-4" /></Button>
+          <Input type="date" aria-label="Date" value={day} max={today} onChange={(e) => e.target.value && setDay(e.target.value)} className="w-40" />
+          <Button variant="secondary" size="sm" onClick={() => shift(1)} disabled={day >= today} aria-label="Next day"><ChevronRight className="size-4" /></Button>
+          {day !== today && <Button variant="ghost" size="sm" onClick={() => setDay(today)}>Today</Button>}
+          <p className="text-sm text-ink-2 sm:ml-2">{pretty}</p>
         </div>
-      ) : (
-        <>
-          {/* Mark Attendance Tab */}
-          {activeTab === 'mark' && (
-            <>
-              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '12px', fontWeight: 600, color: '#374151', marginBottom: '4px' }}>Date</label>
-                  <input type="date" value={selectedDate} onChange={(e) => {
-                    setSelectedDate(e.target.value)
-                    const map: Record<string, string> = {}
-                    data?.records?.forEach((r: any) => {
-                      if (r.date?.split('T')[0] === e.target.value) map[r.employeeId] = r.status
-                    })
-                    setAttendanceMap(map)
-                  }} style={{ padding: '8px 12px', border: '1.5px solid #E2E8F0', borderRadius: '8px', fontSize: '13px', fontFamily: 'Inter, sans-serif' }} />
-                </div>
-                <div style={{ display: 'flex', gap: '8px', marginTop: '20px' }}>
-                  <button onClick={() => {
-                    const map: Record<string, string> = {}
-                    employees.forEach((emp: any) => map[emp.id] = 'PRESENT')
-                    setAttendanceMap(map)
-                  }} style={{ padding: '8px 14px', background: '#F0FDF4', color: '#16A34A', border: '1px solid #BBF7D0', borderRadius: '8px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                    Mark All Present
-                  </button>
-                  <button onClick={saveBulkAttendance} disabled={saving} style={{ padding: '8px 20px', background: saving ? '#94A3B8' : '#1E3A5F', color: '#fff', border: 'none', borderRadius: '8px', fontSize: '13px', fontWeight: 600, cursor: saving ? 'not-allowed' : 'pointer', fontFamily: 'Inter, sans-serif' }}>
-                    {saving ? 'Saving...' : '💾 Save Attendance'}
-                  </button>
-                </div>
-              </div>
 
-              {employees.length === 0 ? (
-                <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', padding: '60px', textAlign: 'center' }}>
-                  <p style={{ color: '#94A3B8' }}>No active employees found. Add employees first.</p>
-                </div>
-              ) : (
-                <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead>
-                      <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                        {['Employee', 'Code', 'Department', 'Status'].map((h) => (
-                          <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {employees.map((emp: any, i: number) => {
-                        const status = attendanceMap[emp.id] || ''
-                        const ss = status ? STATUS_STYLES[status] : null
-                        return (
-                          <tr key={emp.id} style={{ borderBottom: i < employees.length - 1 ? '1px solid #F1F5F9' : 'none' }}>
-                            <td style={{ padding: '12px 16px', fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{emp.name}</td>
-                            <td style={{ padding: '12px 16px' }}>
-                              <span style={{ fontFamily: 'monospace', fontSize: '12px', background: '#F1F5F9', padding: '2px 8px', borderRadius: '6px' }}>{emp.employeeCode}</span>
-                            </td>
-                            <td style={{ padding: '12px 16px', fontSize: '13px', color: '#64748B' }}>{emp.department || '—'}</td>
-                            <td style={{ padding: '12px 16px' }}>
-                              <div style={{ display: 'flex', gap: '6px' }}>
-                                {STATUS_OPTIONS.map((s) => {
-                                  const st = STATUS_STYLES[s]
-                                  return (
-                                    <button key={s} onClick={() => updateStatus(emp.id, s)} style={{
-                                      padding: '6px 12px', borderRadius: '8px', border: `2px solid ${status === s ? st.color : '#E2E8F0'}`,
-                                      background: status === s ? st.bg : '#F8FAFC',
-                                      color: status === s ? st.color : '#94A3B8',
-                                      fontSize: '12px', fontWeight: 700, cursor: 'pointer',
-                                      fontFamily: 'Inter, sans-serif',
-                                    }}>{st.short}</button>
-                                  )
-                                })}
-                              </div>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+        {loading && !data ? (
+          <Spinner label="Loading attendance" />
+        ) : employees.length === 0 ? (
+          <EmptyState icon={<CalendarCheck />} title="No active employees" description="Add employees first, then mark their attendance here." />
+        ) : tab === 'day' ? (
+          <>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line bg-subtle px-4 py-2.5 text-[13px] sm:px-5">
+              {counts.map((c) => (
+                <span key={c.key} className="flex items-center gap-1.5 text-ink-2">
+                  <span className={cn('flex size-5 items-center justify-center rounded text-[11px] font-semibold', c.cell)}>{c.short}</span>
+                  {c.label} <span className="num font-medium text-ink">{c.n}</span>
+                </span>
+              ))}
+              {unmarked > 0 && <span className="text-ink-3">{unmarked} not marked</span>}
+              {canWrite('hr') && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="sm:ml-auto"
+                  icon={<CheckCheck className="size-4" />}
+                  onClick={() => {
+                    const all: Record<string, Status> = { ...marks }
+                    for (const e of employees) if (!all[e.id]) all[e.id] = 'PRESENT'
+                    setMarks(all)
+                    setDirty(true)
+                  }}
+                >
+                  Mark the rest present
+                </Button>
               )}
-            </>
-          )}
-
-          {/* Monthly Summary Tab */}
-          {activeTab === 'summary' && (
-            <div style={{ background: '#fff', borderRadius: '16px', border: '1px solid #E2E8F0', overflow: 'hidden' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            </div>
+            <ul className="divide-y divide-line">
+              {employees.map((e) => (
+                <li key={e.id} className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                  <div className="min-w-0">
+                    <p className="font-medium text-ink">{e.name}</p>
+                    <p className="num text-xs text-ink-3">{e.employeeCode}</p>
+                  </div>
+                  <div role="radiogroup" aria-label={`Attendance for ${e.name}`} className="grid grid-cols-4 gap-1.5 sm:flex">
+                    {STATUSES.map((s) => {
+                      const on = marks[e.id] === s.key
+                      return (
+                        <button
+                          key={s.key}
+                          type="button"
+                          role="radio"
+                          aria-checked={on}
+                          disabled={!canWrite('hr')}
+                          onClick={() => mark(e.id, s.key)}
+                          className={cn(
+                            'h-8 rounded-[var(--radius-control)] border px-3 text-[13px] transition-colors disabled:cursor-not-allowed',
+                            on ? `${s.on} font-medium` : 'border-line-strong text-ink-2 hover:bg-subtle',
+                          )}
+                        >
+                          {s.label}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {canWrite('hr') && (
+              <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-surface px-4 py-3 sm:px-5">
+                <p className="text-[13px] text-ink-3">{dirty ? 'You have unsaved changes.' : 'Saved marks show as selected.'}</p>
+                <Button onClick={save} loading={saving} disabled={!dirty}>Save attendance</Button>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <CardHeader
+              title={`${MONTHS[m - 1]} ${y}`}
+              description="Each square is one day. Pick a date above to see another month."
+              action={
+                <div className="flex flex-wrap gap-3 text-xs text-ink-2">
+                  {STATUSES.map((s) => (
+                    <span key={s.key} className="flex items-center gap-1">
+                      <span className={cn('flex size-4 items-center justify-center rounded-sm text-[10px] font-semibold', s.cell)}>{s.short}</span>
+                      {s.label}
+                    </span>
+                  ))}
+                </div>
+              }
+            />
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-xs">
                 <thead>
-                  <tr style={{ background: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                    {['Employee', 'Code', 'Present', 'Absent', 'Half Day', 'Leave'].map((h) => (
-                      <th key={h} style={{ padding: '12px 16px', textAlign: 'left', fontSize: '12px', fontWeight: 600, color: '#64748B', textTransform: 'uppercase' }}>{h}</th>
-                    ))}
+                  <tr>
+                    <th scope="col" className="sticky left-0 z-10 min-w-40 border-b border-line bg-subtle px-4 py-2 text-left text-[13px] font-semibold text-ink-2">Employee</th>
+                    {Array.from({ length: daysInMonth }, (_, i) => {
+                      const wd = new Date(y, m - 1, i + 1).getDay()
+                      return (
+                        <th key={i} scope="col" className={cn('border-b border-line bg-subtle px-0.5 py-2 text-center font-medium', wd === 0 ? 'text-bad' : 'text-ink-3')}>
+                          {i + 1}
+                        </th>
+                      )
+                    })}
+                    <th scope="col" className="border-b border-line bg-subtle px-3 py-2 text-right text-[13px] font-semibold text-ink-2">Present</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {employees.map((emp: any, i: number) => (
-                    <tr key={emp.id} style={{ borderBottom: i < employees.length - 1 ? '1px solid #F1F5F9' : 'none' }}
-                      onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
-                    >
-                      <td style={{ padding: '14px 16px', fontSize: '14px', fontWeight: 600, color: '#0F172A' }}>{emp.name}</td>
-                      <td style={{ padding: '14px 16px' }}>
-                        <span style={{ fontFamily: 'monospace', fontSize: '12px', background: '#F1F5F9', padding: '2px 8px', borderRadius: '6px' }}>{emp.employeeCode}</span>
-                      </td>
-                      <td style={{ padding: '14px 16px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 700, color: '#16A34A' }}>{emp.present}</span>
-                      </td>
-                      <td style={{ padding: '14px 16px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 700, color: '#DC2626' }}>{emp.absent}</span>
-                      </td>
-                      <td style={{ padding: '14px 16px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 700, color: '#EA580C' }}>{emp.halfDay}</span>
-                      </td>
-                      <td style={{ padding: '14px 16px' }}>
-                        <span style={{ fontSize: '14px', fontWeight: 700, color: '#1D4ED8' }}>{emp.onLeave}</span>
-                      </td>
+                  {employees.map((e) => (
+                    <tr key={e.id} className="hover:bg-subtle/60">
+                      <th scope="row" className="sticky left-0 z-10 border-b border-line bg-surface px-4 py-2 text-left text-[13px] font-medium text-ink">{e.name}</th>
+                      {Array.from({ length: daysInMonth }, (_, i) => {
+                        const st = grid[e.id]?.[i + 1]
+                        return (
+                          <td key={i} className="border-b border-line px-0.5 py-1.5 text-center">
+                            <span
+                              title={st ? `${i + 1} ${MONTHS[m - 1]}: ${byKey[st]?.label}` : undefined}
+                              className={cn('mx-auto flex size-6 items-center justify-center rounded-sm font-semibold', st ? byKey[st]?.cell : 'bg-subtle text-transparent')}
+                            >
+                              {st ? byKey[st]?.short : '·'}
+                            </span>
+                          </td>
+                        )
+                      })}
+                      <td className="num border-b border-line px-3 py-2 text-right text-[13px] font-medium">{e.present + e.halfDay / 2}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          )}
-        </>
-      )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          </>
+        )}
+      </Card>
     </TenantLayout>
   )
 }

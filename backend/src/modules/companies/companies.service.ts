@@ -76,6 +76,11 @@ export class CompaniesService {
   }
 
   async create(dto: CreateCompanyDto) {
+    const RESERVED = ['www', 'admin', 'api', 'app', 'mail', 'erp', 'login', 'dashboard', 'public'];
+    if (RESERVED.includes(dto.slug) || dto.slug.length < 3 || dto.slug.length > 30 || /^-|-$/.test(dto.slug)) {
+      throw new BadRequestException('Choose another subdomain: 3 to 30 letters, numbers or hyphens, not starting or ending with a hyphen');
+    }
+
     // ── Check duplicate slug ───────────────────────────
     const existing = await this.prisma.company.findUnique({
       where: { slug: dto.slug },
@@ -177,41 +182,63 @@ await this.tenantService.seedTenantData(
     const company = await this.prisma.company.findUnique({ where: { id } });
     if (!company) throw new NotFoundException('Company not found');
 
+    // The company's data lives in schema "tenant_<slug>", so the slug can't change
     if (dto.slug && dto.slug !== company.slug) {
-      const existing = await this.prisma.company.findUnique({ where: { slug: dto.slug } });
-      if (existing) {
-        throw new BadRequestException('This subdomain is already taken');
-      }
+      throw new BadRequestException('The company login address (subdomain) cannot be changed after creation');
     }
 
     const data: any = {};
-    if (dto.name) data.name = dto.name;
-    if (dto.slug) data.slug = dto.slug;
-    if (dto.ceoName) data.ceoName = dto.ceoName;
-    if (dto.ceoEmail) data.ceoEmail = dto.ceoEmail;
-    if (dto.plan) data.plan = dto.plan;
+    if (dto.name) data.name = dto.name.trim();
+    if (dto.ceoName) data.ceoName = dto.ceoName.trim();
+    if (dto.ceoEmail) data.ceoEmail = dto.ceoEmail.trim().toLowerCase();
+    if (dto.plan) {
+      if (!['FREE', 'STARTER', 'PROFESSIONAL', 'ENTERPRISE'].includes(dto.plan)) {
+        throw new BadRequestException('Unknown plan');
+      }
+      data.plan = dto.plan;
+    }
 
+    let modules: { id: string }[] | null = null;
     if (dto.moduleKeys) {
-      const modules = await this.prisma.module.findMany({
+      modules = await this.prisma.module.findMany({
         where: { key: { in: dto.moduleKeys }, isActive: true },
       });
       if (modules.length === 0) {
         throw new BadRequestException('No valid modules selected');
       }
-      await this.prisma.companyModule.deleteMany({ where: { companyId: id } });
-      await this.prisma.companyModule.createMany({
-        data: modules.map((m) => ({
-          companyId: id,
-          moduleId: m.id,
-        })),
-      });
     }
 
-    if (dto.ceoPassword) {
-      data.ceoPassword = await bcrypt.hash(dto.ceoPassword, 10);
+    // Owner login (name / email / password) lives in the company's own users table
+    if (data.ceoName || data.ceoEmail || dto.ceoPassword) {
+      const client = await this.tenantService.getTenantClient(company.slug);
+      if (data.ceoEmail) {
+        const taken = (await client.$queryRawUnsafe(
+          `SELECT "id" FROM "users" WHERE LOWER("email") = $1 AND "isOwner" = false AND "isDeleted" = false LIMIT 1`,
+          data.ceoEmail,
+        )) as any[];
+        if (taken.length) throw new BadRequestException('Another user in this company already uses that email');
+      }
+      const hashed = dto.ceoPassword ? await bcrypt.hash(dto.ceoPassword, 10) : null;
+      await client.$queryRawUnsafe(
+        `UPDATE "users"
+         SET "name" = COALESCE($1, "name"), "email" = COALESCE($2, "email"),
+             "password" = COALESCE($3, "password"), "updatedAt" = NOW()
+         WHERE "isOwner" = true AND "isDeleted" = false`,
+        data.ceoName || null,
+        data.ceoEmail || null,
+        hashed,
+      );
     }
 
-    const updated = await this.prisma.company.update({ where: { id }, data });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (modules) {
+        await tx.companyModule.deleteMany({ where: { companyId: id } });
+        await tx.companyModule.createMany({
+          data: modules.map((m) => ({ companyId: id, moduleId: m.id })),
+        });
+      }
+      return tx.company.update({ where: { id }, data });
+    });
 
     return {
       success: true,

@@ -57,6 +57,10 @@ async function runTenantUpgrades(client: Db, slug: string) {
     `ALTER TABLE "invoices" ADD COLUMN IF NOT EXISTS "isPosted" BOOLEAN DEFAULT false`,
   );
 
+  // Payroll: when and how a salary was paid (Part 3)
+  await client.$queryRawUnsafe(`ALTER TABLE "payroll" ADD COLUMN IF NOT EXISTS "paidAt" TIMESTAMP`);
+  await client.$queryRawUnsafe(`ALTER TABLE "payroll" ADD COLUMN IF NOT EXISTS "paidMethod" VARCHAR(20)`);
+
   // ── Accounting upgrades (Batch 4) ──
   // isJournaled = old invoice that was later posted to accounts (no stock change)
   await client.$queryRawUnsafe(
@@ -86,6 +90,7 @@ async function runTenantUpgrades(client: Db, slug: string) {
     ['2200', 'Sales Tax Payable', 'LIABILITY'],
     ['4000', 'Sales Revenue', 'INCOME'],
     ['5000', 'Cost of Goods Sold', 'EXPENSE'],
+    ['5100', 'Salaries Expense', 'EXPENSE'],
   ];
   for (const [code, name, type] of requiredAccounts) {
     await client.$queryRawUnsafe(

@@ -1,7 +1,10 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import toast from 'react-hot-toast'
+import { ChevronDown, Download, FileSpreadsheet, FileText, FileType2 } from 'lucide-react'
 import { exportToCSV, exportToExcel, exportToPDF, ExportColumn } from '@/lib/export'
+import { Button } from '@/components/ui'
 
 interface ExportButtonProps {
   data: any[]
@@ -12,104 +15,81 @@ interface ExportButtonProps {
   disabled?: boolean
 }
 
-export default function ExportButton({
-  data,
-  filename,
-  columns,
-  title,
-  subtitle,
-  disabled = false,
-}: ExportButtonProps) {
+export default function ExportButton({ data, filename, columns, title, subtitle, disabled = false }: ExportButtonProps) {
   const [open, setOpen] = useState(false)
-  const [exporting, setExporting] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) {
-        setOpen(false)
-      }
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
-    document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onClick)
+      document.removeEventListener('keydown', onKey)
+    }
   }, [])
 
-  async function handleExport(type: 'csv' | 'excel' | 'pdf') {
-    setExporting(type)
+  async function run(type: 'csv' | 'excel' | 'pdf') {
     setOpen(false)
+    if (!data?.length) {
+      toast.error('There is nothing to export yet.')
+      return
+    }
+    setExporting(true)
     try {
       if (type === 'csv') exportToCSV(data, filename, columns)
       else if (type === 'excel') exportToExcel(data, filename, columns, title)
       else await exportToPDF(data, filename, columns, title, subtitle)
     } catch (err) {
       console.error('Export failed:', err)
-      alert('Export failed. Please try again.')
+      toast.error('Export failed. Try again.')
     } finally {
-      setExporting(null)
+      setExporting(false)
     }
   }
 
   const options = [
-    { type: 'csv' as const, label: '📄 Export CSV', desc: 'Comma-separated values' },
-    { type: 'excel' as const, label: '📊 Export Excel', desc: 'Formatted .xlsx file' },
-    { type: 'pdf' as const, label: '📋 Export PDF', desc: 'Printable document' },
+    { type: 'excel' as const, label: 'Excel (.xlsx)', icon: FileSpreadsheet },
+    { type: 'pdf' as const, label: 'PDF', icon: FileText },
+    { type: 'csv' as const, label: 'CSV', icon: FileType2 },
   ]
 
   return (
-    <div ref={ref} style={{ position: 'relative', display: 'inline-block' }}>
-      <button
-        onClick={() => !disabled && setOpen(!open)}
-        disabled={disabled || !!exporting}
-        style={{
-          padding: '9px 16px',
-          background: disabled ? '#F1F5F9' : '#F0FDF4',
-          color: disabled ? '#94A3B8' : '#16A34A',
-          border: `1px solid ${disabled ? '#E2E8F0' : '#BBF7D0'}`,
-          borderRadius: '10px', fontSize: '13px', fontWeight: 600,
-          cursor: disabled ? 'not-allowed' : 'pointer',
-          fontFamily: 'Inter, sans-serif',
-          display: 'flex', alignItems: 'center', gap: '6px',
-        }}
+    <div ref={ref} className="relative">
+      <Button
+        variant="secondary"
+        onClick={() => setOpen((o) => !o)}
+        disabled={disabled}
+        loading={exporting}
+        icon={<Download className="size-4" />}
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
-        {exporting ? (
-          <>
-            <span style={{ width: '14px', height: '14px', border: '2px solid #BBF7D0', borderTopColor: '#16A34A', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
-            Exporting...
-          </>
-        ) : (
-          <>⬇️ Export ▾</>
-        )}
-      </button>
-
+        Export
+        <ChevronDown className="-mr-1 size-4 text-ink-3" />
+      </Button>
       {open && (
-        <div style={{
-          position: 'absolute', right: 0, top: 'calc(100% + 6px)',
-          background: '#fff', borderRadius: '12px',
-          border: '1px solid #E2E8F0', padding: '6px',
-          boxShadow: '0 8px 24px rgba(0,0,0,0.12)',
-          zIndex: 100, minWidth: '200px',
-        }}>
-          {options.map((opt) => (
+        <div role="menu" className="absolute right-0 z-50 mt-1.5 w-48 overflow-hidden rounded-[var(--radius-control)] border border-line bg-surface py-1 shadow-lg">
+          {options.map((o) => (
             <button
-              key={opt.type}
-              onClick={() => handleExport(opt.type)}
-              style={{
-                width: '100%', padding: '10px 14px',
-                background: 'transparent', border: 'none',
-                borderRadius: '8px', cursor: 'pointer',
-                textAlign: 'left', fontFamily: 'Inter, sans-serif',
-                display: 'flex', flexDirection: 'column', gap: '2px',
-              }}
-              onMouseEnter={(e) => e.currentTarget.style.background = '#F8FAFC'}
-              onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+              key={o.type}
+              role="menuitem"
+              type="button"
+              onClick={() => run(o.type)}
+              className="flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm text-ink hover:bg-subtle"
             >
-              <span style={{ fontSize: '13px', fontWeight: 600, color: '#0F172A' }}>{opt.label}</span>
-              <span style={{ fontSize: '11px', color: '#94A3B8' }}>{opt.desc}</span>
+              <o.icon className="size-4 text-ink-3" />
+              {o.label}
             </button>
           ))}
         </div>
       )}
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }

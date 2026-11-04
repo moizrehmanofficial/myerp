@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../database/prisma.service';
 import { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
@@ -38,7 +38,7 @@ export class BackupService {
 
     // Find company
     const company = await this.prisma.company.findUnique({ where: { slug } });
-    if (!company) throw new Error(`Company not found: ${slug}`);
+    if (!company) throw new NotFoundException(`Company not found: ${slug}`);
 
     // Create pending log
     const backupLog = await this.prisma.backupLog.create({
@@ -139,7 +139,7 @@ export class BackupService {
         },
       })
 
-      throw new Error(`Backup failed: ${error.message}`)
+      throw new BadRequestException(`Backup failed: ${error.message}`)
     }
   }
 
@@ -151,7 +151,7 @@ export class BackupService {
     })
 
     if (!backup || !backup.fileKey) {
-      throw new Error('Backup not found or file missing')
+      throw new NotFoundException('Backup not found or its file is missing')
     }
 
     const signedUrl = await getSignedUrl(
@@ -198,7 +198,7 @@ export class BackupService {
 
   async getBackupLogsBySlug(slug: string, page = 1, limit = 10) {
     const company = await this.prisma.company.findUnique({ where: { slug } })
-    if (!company) throw new Error('Company not found')
+    if (!company) throw new NotFoundException('Company not found')
     return this.getBackupLogs(company.id, page, limit)
   }
 

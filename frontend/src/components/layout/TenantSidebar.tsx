@@ -1,202 +1,45 @@
 'use client'
 
-import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { useState } from 'react'
+import { useCompanyHref } from '@/lib/useCompanyHref'
 import axios from 'axios'
+import { Building2, ChevronDown, ChevronsLeft, ChevronsRight, LogOut, X } from 'lucide-react'
+import { cn } from '@/utils/utils'
+import { TENANT_NAV, ALWAYS_VISIBLE, type NavGroup } from './tenantNav'
 
 interface TenantSidebarProps {
   activePath: string
   user: any
   subdomain: string
+  companyName?: string
+  collapsed: boolean
+  onToggleCollapsed: () => void
+  mobileOpen: boolean
+  onCloseMobile: () => void
 }
 
-const menuGroups = [
-  {
-    key: 'dashboard',
-    moduleKey: 'dashboard',
-    label: 'Dashboard',
-    icon: '📊',
-    path: '/erp/dashboard',
-    single: true,
-  },
-  {
-    key: 'users',
-    moduleKey: 'users',
-    label: 'Users & Roles',
-    icon: '👥',
-    path: '/erp/users',
-    single: true,
-  },
-  {
-    key: 'customers',
-    moduleKey: 'contacts',
-    label: 'Customers & Suppliers',
-    icon: '👥',
-    single: false,
-    children: [
-      { label: 'Customers', path: '/erp/customers' },
-      { label: 'Suppliers', path: '/erp/suppliers' },
-    ],
-  },
-  {
-    key: 'products',
-    moduleKey: 'products',
-    label: 'Products & Inventory',
-    icon: '📦',
-    single: false,
-    children: [
-      { label: 'Products', path: '/erp/products' },
-      { label: 'Inventory', path: '/erp/inventory' },
-      { label: 'Stock Adjustment', path: '/erp/stock-adjustment' },
-      { label: 'Categories', path: '/erp/categories' },
-      { label: 'Brands', path: '/erp/brands' },
-    ],
-  },
-  {
-    key: 'purchase',
-    moduleKey: 'purchase',
-    label: 'Purchase',
-    icon: '🛒',
-    single: false,
-    children: [
-      { label: 'Purchase Orders', path: '/erp/purchase/orders' },
-      { label: 'Purchase Returns', path: '/erp/purchase/returns' },
-    ],
-  },
-  {
-    key: 'sales',
-    moduleKey: 'sales',
-    label: 'Sales',
-    icon: '💰',
-    single: false,
-    children: [
-      { label: 'Sales Orders', path: '/erp/sales/orders' },
-      { label: 'Sale Returns', path: '/erp/sales/returns' },
-    ],
-  },
-  {
-    key: 'invoices',
-    moduleKey: 'invoices',
-    label: 'Invoices',
-    icon: '🧾',
-    single: false,
-    children: [
-      { label: 'All Invoices', path: '/erp/invoices' },
-      { label: 'Create Invoice', path: '/erp/invoices/create' },
-    ],
-  },
-  {
-    key: 'finance',
-    moduleKey: 'finance',
-    label: 'Accounts & Finance',
-    icon: '🏦',
-    single: false,
-    children: [
-      { label: 'Chart of Accounts', path: '/erp/finance/accounts' },
-      { label: 'Journal Voucher', path: '/erp/finance/journal' },
-      { label: 'Payment Voucher', path: '/erp/finance/payments' },
-      { label: 'Receipt Voucher', path: '/erp/finance/receipts' },
-      { label: 'Ledger', path: '/erp/finance/ledger' },
-    ],
-  },
-  {
-    key: 'manufacturing',
-    moduleKey: 'manufacturing',
-    label: 'Manufacturing',
-    icon: '🏭',
-    path: '/erp/manufacturing',
-    single: true,
-  },
-  {
-    key: 'hr',
-    moduleKey: 'hr',
-    label: 'HR & Payroll',
-    icon: '👤',
-    single: false,
-    children: [
-      { label: 'Employees', path: '/erp/hr/employees' },
-      { label: 'Attendance', path: '/erp/hr/attendance' },
-      { label: 'Leave Management', path: '/erp/hr/leave' },
-      { label: 'Payroll', path: '/erp/hr/payroll' },
-    ],
-  },
-  {
-    key: 'reports',
-    moduleKey: 'reports',
-    label: 'Reports',
-    icon: '📈',
-    single: false,
-    children: [
-      { label: 'Sales Report', path: '/erp/reports/sales' },
-      { label: 'Purchase Report', path: '/erp/reports/purchase' },
-      { label: 'Invoice Report', path: '/erp/reports/invoices' },
-      { label: 'Stock Report', path: '/erp/reports/stock' },
-      { label: 'Stock Movement', path: '/erp/reports/stock-movement' },
-      { label: 'Profit & Loss', path: '/erp/reports/profit-loss' },
-      { label: 'Balance Sheet', path: '/erp/reports/balance-sheet' },
-      { label: 'Accounts Receivable', path: '/erp/reports/ar' },
-      { label: 'Accounts Payable', path: '/erp/reports/ap' },
-      { label: 'Customer Ledger', path: '/erp/reports/customer-ledger' },
-      { label: 'Supplier Ledger', path: '/erp/reports/supplier-ledger' },
-      { label: 'Attendance Report', path: '/erp/reports/attendance' },
-      { label: 'Payroll Report', path: '/erp/reports/payroll-report' },
-    ],
-  },
-  {
-    key: 'settings',
-    moduleKey: 'settings',
-    label: 'Settings',
-    icon: '⚙️',
-    single: false,
-    children: [
-      { label: 'Company Settings', path: '/erp/settings' },
-      { label: 'Audit Log', path: '/erp/audit-logs' },
-    ],
-  },
-]
 
-export default function TenantSidebar({ activePath, user, subdomain }: TenantSidebarProps) {
-  const router = useRouter()
+function isActive(activePath: string, path: string) {
+  return activePath === path || activePath.startsWith(path + '/')
+}
 
+export default function TenantSidebar({
+  activePath, user, subdomain, companyName, collapsed, onToggleCollapsed, mobileOpen, onCloseMobile,
+}: TenantSidebarProps) {
+  const href = useCompanyHref()
   const moduleKeys: string[] = user?.moduleKeys || []
 
-  // Always-visible items regardless of plan
-  const alwaysVisible = ['dashboard', 'settings']
+  const groups = TENANT_NAV.filter((g) => ALWAYS_VISIBLE.includes(g.moduleKey) || moduleKeys.includes(g.moduleKey))
 
-  const visibleGroups = menuGroups.filter((g) =>
-    alwaysVisible.includes(g.moduleKey) || moduleKeys.includes(g.moduleKey)
-  )
-
-  function getInitialOpenGroups(): Record<string, boolean> {
-    const open: Record<string, boolean> = {}
-    visibleGroups.forEach((group) => {
-      if (!group.single && group.children) {
-        const isActive = group.children.some((c) => activePath.startsWith(c.path))
-        if (isActive) open[group.key] = true
-      }
+  // The group that contains the current page starts open
+  const [open, setOpen] = useState<Record<string, boolean>>(() => {
+    const o: Record<string, boolean> = {}
+    TENANT_NAV.forEach((g) => {
+      if (g.children?.some((c) => isActive(activePath, c.path))) o[g.key] = true
     })
-    return open
-  }
-
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>(getInitialOpenGroups)
-
-    function toggleGroup(key: string) {
-    setOpenGroups((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
-
-  // Preserves ?company= when navigating, so tenant identity isn't
-  // lost on sidebar clicks (Vercel no-domain URLs).
-  function navigate(path: string) {
-    if (typeof window !== 'undefined') {
-      const params = new URLSearchParams(window.location.search)
-      const company = params.get('company')
-      if (company) {
-        router.push(`${path}?company=${company}`)
-        return
-      }
-    }
-    router.push(path)
-  }
+    return o
+  })
 
   async function handleLogout() {
     sessionStorage.removeItem(`tenant_user_${subdomain}`)
@@ -205,252 +48,179 @@ export default function TenantSidebar({ activePath, user, subdomain }: TenantSid
       await axios.post(
         `${process.env.NEXT_PUBLIC_API_URL}/tenant-auth/logout`,
         {},
-        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } }
+        { withCredentials: true, headers: { 'x-tenant-slug': subdomain } },
       )
     } catch {}
-    window.location.href = '/erp-login'
+    window.location.href = `/erp-login${subdomain ? `?company=${encodeURIComponent(subdomain)}` : ''}`
   }
 
-  return (
-    <aside style={{
-      width: '230px', height: '100vh',
-      background: '#1E3A5F', position: 'fixed',
-      left: 0, top: 0, display: 'flex',
-      flexDirection: 'column', zIndex: 100,
-      overflow: 'hidden',
-    }}>
+  const name = companyName || subdomain || 'Company'
+  // On phones the drawer is always full width (never the icon-only mode)
+  const compact = collapsed && !mobileOpen
 
-      {/* Logo */}
-      <div style={{
-        padding: '20px 16px',
-        borderBottom: '1px solid rgba(255,255,255,0.1)',
-        flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-          <div style={{
-            width: '36px', height: '36px',
-            background: 'rgba(255,255,255,0.15)',
-            borderRadius: '10px', display: 'flex',
-            alignItems: 'center', justifyContent: 'center', fontSize: '16px',
-            overflow: 'hidden', flexShrink: 0,
-          }}>
+  function renderGroup(group: NavGroup) {
+    const Icon = group.icon
+    const children = (group.children || []).filter(
+      (c) => !c.ownerOrModuleOnly || user?.isOwner || moduleKeys.includes(group.moduleKey),
+    )
+
+    if (group.path || compact) {
+      // Single link — or, in icon-only mode, jump to the group's first page
+      const target = group.path || children[0]?.path || '#'
+      const active = group.path ? isActive(activePath, group.path) : children.some((c) => isActive(activePath, c.path))
+      return (
+        <li key={group.key}>
+          <Link
+            href={href(target)}
+            onClick={onCloseMobile}
+            title={compact ? group.label : undefined}
+            aria-current={active ? 'page' : undefined}
+            className={cn(
+              'group relative flex h-10 items-center gap-3 rounded-lg px-3 text-[14px] text-nav-text transition-colors hover:bg-nav-hover hover:text-white',
+              active && 'bg-nav-active font-medium text-white',
+              compact && 'justify-center px-0',
+            )}
+          >
+            {active && <span className="absolute inset-y-2 left-0 w-[3px] rounded-r bg-[#2dd4bf]" aria-hidden />}
+            <Icon className="size-[18px] shrink-0" strokeWidth={1.8} aria-hidden />
+            {!compact && <span className="truncate">{group.label}</span>}
+          </Link>
+        </li>
+      )
+    }
+
+    const expanded = !!open[group.key]
+    const hasActive = children.some((c) => isActive(activePath, c.path))
+    return (
+      <li key={group.key}>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => ({ ...o, [group.key]: !o[group.key] }))}
+          aria-expanded={expanded}
+          className={cn(
+            'flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-[14px] text-nav-text transition-colors hover:bg-nav-hover hover:text-white',
+            hasActive && 'text-white',
+          )}
+        >
+          <Icon className="size-[18px] shrink-0" strokeWidth={1.8} aria-hidden />
+          <span className="flex-1 truncate">{group.label}</span>
+          <ChevronDown className={cn('size-4 shrink-0 text-nav-muted transition-transform', expanded && 'rotate-180')} aria-hidden />
+        </button>
+        {expanded && (
+          <ul className="mt-0.5 mb-1 ml-[21px] border-l border-white/10 pl-2">
+            {children.map((c) => {
+              const active = activePath === c.path
+              return (
+                <li key={c.path}>
+                  <Link
+                    href={href(c.path)}
+                    onClick={onCloseMobile}
+                    aria-current={active ? 'page' : undefined}
+                    className={cn(
+                      'block truncate rounded-md px-3 py-1.5 text-[13.5px] text-nav-muted transition-colors hover:bg-nav-hover hover:text-white',
+                      active && 'bg-nav-active font-medium text-white',
+                    )}
+                  >
+                    {c.label}
+                  </Link>
+                </li>
+              )
+            })}
+          </ul>
+        )}
+      </li>
+    )
+  }
+
+  const initials = String(user?.name || 'U')
+    .split(' ')
+    .map((p: string) => p[0])
+    .slice(0, 2)
+    .join('')
+    .toUpperCase()
+
+  return (
+    <>
+      {/* Phone / tablet backdrop */}
+      {mobileOpen && <div className="fixed inset-0 z-[90] bg-nav/50 lg:hidden" onClick={onCloseMobile} aria-hidden />}
+
+      <aside
+        className={cn(
+          'fixed inset-y-0 left-0 z-[100] flex flex-col bg-nav transition-[width,transform] duration-200 print:hidden',
+          'w-[272px] -translate-x-full lg:translate-x-0',
+          mobileOpen && 'translate-x-0',
+          collapsed ? 'lg:w-[72px]' : 'lg:w-[256px]',
+        )}
+        aria-label="Main navigation"
+      >
+        {/* Company */}
+        <div className={cn('flex h-16 shrink-0 items-center gap-3 border-b border-white/10 px-4', compact && 'justify-center px-0')}>
+          <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white/10 text-white">
             {user?.logoUrl ? (
-              <img src={user.logoUrl} alt="Logo" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: '4px' }} />
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={user.logoUrl} alt="" className="size-full object-contain p-1" />
             ) : (
-              <span>🏢</span>
+              <Building2 className="size-[18px]" strokeWidth={1.8} aria-hidden />
             )}
           </div>
-          <div>
-            <div style={{
-              color: '#fff', fontWeight: 700, fontSize: '15px',
-              lineHeight: 1, textTransform: 'capitalize',
-            }}>{subdomain || 'Company'}</div>
-            <div style={{ color: '#93C5FD', fontSize: '10px', marginTop: '2px' }}>
-              ERP System
+          {!compact && (
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[15px] font-semibold text-white capitalize">{name}</p>
+              <p className="text-xs text-nav-muted">MyERP</p>
             </div>
-          </div>
+          )}
+          <button
+            type="button"
+            onClick={onCloseMobile}
+            className="rounded-md p-1.5 text-nav-muted hover:bg-nav-hover hover:text-white lg:hidden"
+            aria-label="Close menu"
+          >
+            <X className="size-5" />
+          </button>
         </div>
-      </div>
 
-      {/* Nav */}
-      <nav style={{
-        flex: 1,
-        padding: '10px 8px',
-        overflowY: 'auto',
-        overflowX: 'hidden',
-        scrollbarWidth: 'thin',
-        scrollbarColor: 'rgba(255,255,255,0.15) transparent',
-      }}>
-        {visibleGroups.map((group) => {
+        {/* Menu */}
+        <nav className="flex-1 overflow-y-auto px-3 py-3 [scrollbar-color:rgba(255,255,255,0.15)_transparent]">
+          <ul className="flex flex-col gap-0.5">{groups.map(renderGroup)}</ul>
+        </nav>
 
-          if (group.single) {
-            const isActive = activePath === group.path
-            return (
-                            <button
-                key={group.key}
-                onClick={() => navigate(group.path!)}
-                style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
-                  padding: '9px 10px', borderRadius: '8px', border: 'none',
-                  cursor: 'pointer', marginBottom: '2px',
-                  background: isActive ? 'rgba(255,255,255,0.15)' : 'transparent',
-                  color: isActive ? '#fff' : '#94A3B8',
-                  fontSize: '13px', fontWeight: isActive ? 600 : 400,
-                  fontFamily: 'Inter, sans-serif', textAlign: 'left',
-                }}
-                onMouseEnter={(e) => {
-                  if (!isActive) {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
-                    e.currentTarget.style.color = '#fff'
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!isActive) {
-                    e.currentTarget.style.background = 'transparent'
-                    e.currentTarget.style.color = '#94A3B8'
-                  }
-                }}
-              >
-                <span style={{ fontSize: '15px', width: '20px', textAlign: 'center' }}>
-                  {group.icon}
-                </span>
-                <span style={{ flex: 1 }}>{group.label}</span>
-                {isActive && <span style={{ fontSize: '10px', color: '#60A5FA' }}>●</span>}
-              </button>
-            )
-          }
-
-          const isOpen = openGroups[group.key] || false
-          const hasActive = group.children?.some((c) => activePath.startsWith(c.path))
-
-          return (
-            <div key={group.key} style={{ marginBottom: '2px' }}>
-              <button
-                onClick={() => toggleGroup(group.key)}
-                style={{
-                  width: '100%', display: 'flex', alignItems: 'center', gap: '10px',
-                  padding: '9px 10px', borderRadius: '8px', border: 'none',
-                  cursor: 'pointer',
-                  background: hasActive ? 'rgba(255,255,255,0.1)' : 'transparent',
-                  color: hasActive ? '#fff' : '#94A3B8',
-                  fontSize: '13px', fontWeight: hasActive ? 600 : 400,
-                  fontFamily: 'Inter, sans-serif', textAlign: 'left',
-                }}
-                onMouseEnter={(e) => {
-                  if (!hasActive) {
-                    e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
-                    e.currentTarget.style.color = '#fff'
-                  }
-                }}
-                onMouseLeave={(e) => {
-                  if (!hasActive) {
-                    e.currentTarget.style.background = 'transparent'
-                    e.currentTarget.style.color = '#94A3B8'
-                  }
-                }}
-              >
-                <span style={{ fontSize: '15px', width: '20px', textAlign: 'center' }}>
-                  {group.icon}
-                </span>
-                <span style={{ flex: 1 }}>{group.label}</span>
-                <span style={{
-                  fontSize: '10px', color: '#64748B',
-                  transition: 'transform 0.2s', display: 'inline-block',
-                  transform: isOpen ? 'rotate(90deg)' : 'rotate(0deg)',
-                }}>▶</span>
-              </button>
-
-              {isOpen && (
-                <div style={{
-                  marginLeft: '8px',
-                  borderLeft: '1px solid rgba(255,255,255,0.1)',
-                  marginBottom: '4px',
-                }}>
-                  {group.children
-                    ?.filter((child) =>
-                      // Audit Log only for owner or roles with Settings access
-                      child.path !== '/erp/audit-logs' ||
-                      user?.isOwner ||
-                      moduleKeys.includes('settings'),
-                    )
-                    .map((child) => {
-                    const isChildActive = activePath === child.path
-                    return (
-                                            <button
-                        key={child.path}
-                        onClick={() => navigate(child.path)}
-                        style={{
-                          width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
-                          padding: '7px 10px 7px 14px',
-                          borderRadius: '6px', border: 'none',
-                          cursor: 'pointer', marginBottom: '1px',
-                          background: isChildActive ? 'rgba(255,255,255,0.12)' : 'transparent',
-                          color: isChildActive ? '#60A5FA' : '#94A3B8',
-                          fontSize: '12px', fontWeight: isChildActive ? 600 : 400,
-                          fontFamily: 'Inter, sans-serif', textAlign: 'left',
-                        }}
-                        onMouseEnter={(e) => {
-                          if (!isChildActive) {
-                            e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
-                            e.currentTarget.style.color = '#CBD5E1'
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!isChildActive) {
-                            e.currentTarget.style.background = 'transparent'
-                            e.currentTarget.style.color = '#94A3B8'
-                          }
-                        }}
-                      >
-                        <span style={{
-                          width: '5px', height: '5px',
-                          borderRadius: '50%', flexShrink: 0,
-                          background: isChildActive ? '#60A5FA' : '#475569',
-                        }} />
-                        {child.label}
-                      </button>
-                    )
-                  })}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </nav>
-
-      {/* User + Logout */}
-      <div style={{
-        padding: '12px 10px',
-        borderTop: '1px solid rgba(255,255,255,0.1)',
-        flexShrink: 0,
-      }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: '8px',
-          padding: '8px 10px', marginBottom: '8px',
-        }}>
-          <div style={{
-            width: '32px', height: '32px', borderRadius: '50%',
-            background: '#2E86AB', flexShrink: 0,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: '#fff', fontWeight: 700, fontSize: '13px',
-          }}>
-            {user?.name?.charAt(0) || 'U'}
-          </div>
-          <div style={{ overflow: 'hidden', flex: 1 }}>
-            <div style={{
-              color: '#fff', fontSize: '12px', fontWeight: 600,
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>{user?.name || '...'}</div>
-            <div style={{
-              color: '#64748B', fontSize: '10px',
-              whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
-            }}>{user?.role || 'Owner'}</div>
-          </div>
-        </div>
+        {/* Collapse (desktop only) */}
         <button
-          onClick={handleLogout}
-          style={{
-            width: '100%', padding: '8px 10px',
-            background: 'transparent',
-            border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: '8px', color: '#FCA5A5',
-            fontSize: '12px', fontWeight: 500,
-            cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-            display: 'flex', alignItems: 'center',
-            justifyContent: 'center', gap: '6px',
-          }}
-          onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(239,68,68,0.15)'
-            e.currentTarget.style.color = '#fff'
-          }}
-          onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'transparent'
-            e.currentTarget.style.color = '#FCA5A5'
-          }}
+          type="button"
+          onClick={onToggleCollapsed}
+          className={cn(
+            'mx-3 mb-2 hidden h-9 items-center gap-3 rounded-lg px-3 text-[13px] text-nav-muted hover:bg-nav-hover hover:text-white lg:flex',
+            compact && 'justify-center px-0',
+          )}
+          aria-label={collapsed ? 'Expand menu' : 'Collapse menu'}
+          title={collapsed ? 'Expand menu' : 'Collapse menu'}
         >
-          🚪 Sign Out
+          {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
+          {!compact && 'Collapse menu'}
         </button>
-      </div>
-    </aside>
+
+        {/* User */}
+        <div className={cn('flex shrink-0 items-center gap-3 border-t border-white/10 p-3', compact && 'flex-col gap-2')}>
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-[#2dd4bf]/15 text-[13px] font-semibold text-[#5eead4]" title={user?.name}>
+            {initials}
+          </div>
+          {!compact && (
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[13.5px] font-medium text-white">{user?.name || '…'}</p>
+              <p className="truncate text-xs text-nav-muted">{user?.isOwner ? 'Owner' : user?.role || 'User'}</p>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="rounded-md p-2 text-nav-muted hover:bg-nav-hover hover:text-white"
+            aria-label="Sign out"
+            title="Sign out"
+          >
+            <LogOut className="size-[18px]" strokeWidth={1.8} />
+          </button>
+        </div>
+      </aside>
+    </>
   )
 }
