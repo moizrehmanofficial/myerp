@@ -87,7 +87,7 @@ export class TenantInventoryService {
         totalPages: Math.ceil(total / limit),
       },
     };
-  }
+  } 
 
   async adjustStock(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);

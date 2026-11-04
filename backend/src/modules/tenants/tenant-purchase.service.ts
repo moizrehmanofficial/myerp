@@ -1,5 +1,14 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import {
+  ensureTenantUpgrades,
+  nextDocNumber,
+  stockIn,
+  stockOut,
+  groupQtyByProduct,
+  TX_OPTIONS,
+  round2,
+} from './tenant-doc.helper';
 
 @Injectable()
 export class TenantPurchaseService {
@@ -75,120 +84,133 @@ export class TenantPurchaseService {
 
   async create(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
-    // Generate order number
-    const countResult = await client.$queryRawUnsafe(
-      `SELECT COUNT(*) as count FROM "purchase_orders"`
-    ) as any[];
-    const count = parseInt(countResult[0].count) + 1;
-    const orderNumber = `PO-${String(count).padStart(5, '0')}`;
+    if (!body.supplierId) throw new BadRequestException('Please select a supplier');
+    const items = (Array.isArray(body.items) ? body.items : [])
+      .filter((i: any) => i && i.productId)
+      .map((i: any) => {
+        const quantity = Number(i.quantity);
+        const unitPrice = Number(i.unitPrice);
+        if (!(quantity > 0)) throw new BadRequestException('Quantity must be greater than 0');
+        if (!(unitPrice >= 0)) throw new BadRequestException('Price cannot be negative');
+        return { productId: i.productId, quantity, unitPrice, totalPrice: round2(quantity * unitPrice) };
+      });
+    if (items.length === 0) throw new BadRequestException('Add at least one product');
 
-    // Calculate total
-    const items = body.items || [];
-    let totalAmount = 0;
-    items.forEach((item: any) => {
-      totalAmount += parseFloat(item.quantity) * parseFloat(item.unitPrice);
-    });
+    const totalAmount = round2(items.reduce((sum: number, i: any) => sum + i.totalPrice, 0));
 
-    // Create purchase order
-    const orderResult = await client.$queryRawUnsafe(
-      `INSERT INTO "purchase_orders" (
-        "id", "orderNumber", "supplierId", "status", "totalAmount", "notes"
-      ) VALUES (
-        gen_random_uuid(), $1, $2::uuid, $3, $4, $5
-      ) RETURNING *`,
-      orderNumber,
-      body.supplierId,
-      body.status || 'PENDING',
-      totalAmount,
-      body.notes || null,
-    ) as any[];
+    const order = await client.$transaction(async (tx: any) => {
+      const orderNumber = await nextDocNumber(tx, 'purchase');
 
-    const order = orderResult[0];
+      const orderResult = (await tx.$queryRawUnsafe(
+        `INSERT INTO "purchase_orders" (
+          "id", "orderNumber", "supplierId", "status", "totalAmount", "notes"
+        ) VALUES (
+          gen_random_uuid(), $1, $2::uuid, $3, $4, $5
+        ) RETURNING *`,
+        orderNumber,
+        body.supplierId,
+        body.status || 'PENDING',
+        totalAmount,
+        body.notes || null,
+      )) as any[];
+      const created = orderResult[0];
 
-    // Create items
-    for (const item of items) {
-      const totalPrice = parseFloat(item.quantity) * parseFloat(item.unitPrice);
-      await client.$queryRawUnsafe(
-        `INSERT INTO "purchase_items" (
-          "id", "purchaseOrderId", "productId", "quantity", "unitPrice", "totalPrice"
-        ) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5)`,
-        order.id,
-        item.productId,
-        parseFloat(item.quantity),
-        parseFloat(item.unitPrice),
-        totalPrice,
-      );
-    }
+      for (const item of items) {
+        await tx.$queryRawUnsafe(
+          `INSERT INTO "purchase_items" (
+            "id", "purchaseOrderId", "productId", "quantity", "unitPrice", "totalPrice"
+          ) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5)`,
+          created.id,
+          item.productId,
+          item.quantity,
+          item.unitPrice,
+          item.totalPrice,
+        );
+      }
 
-    // If status is RECEIVED — update stock
-    if (body.status === 'RECEIVED') {
-      await this.updateStock(client, order.id, items);
-    }
+      // Goods received → stock goes up
+      if (created.status === 'RECEIVED') {
+        for (const [productId, qty] of groupQtyByProduct(items)) {
+          await stockIn(tx, productId, qty, orderNumber, 'Purchase received');
+        }
+      }
+      return created;
+    }, TX_OPTIONS);
 
     return { success: true, message: 'Purchase order created successfully', data: order };
   }
 
   async updateStatus(slug: string, id: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    if (!body.status) throw new BadRequestException('Status is required');
 
-    const orders = await client.$queryRawUnsafe(
-      `SELECT * FROM "purchase_orders" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1`,
-      id,
-    ) as any[];
-
-    if (!orders || orders.length === 0) throw new NotFoundException('Purchase order not found');
-
-    const order = orders[0];
-    const wasReceived = order.status === 'RECEIVED';
-    const nowReceived = body.status === 'RECEIVED';
-
-    await client.$queryRawUnsafe(
-      `UPDATE "purchase_orders" SET "status" = $1, "updatedAt" = NOW() WHERE "id" = $2::uuid`,
-      body.status,
-      id,
-    );
-
-    // Update stock when marked as RECEIVED
-    if (!wasReceived && nowReceived) {
-      const items = await client.$queryRawUnsafe(
-        `SELECT * FROM "purchase_items" WHERE "purchaseOrderId" = $1::uuid`,
+    await client.$transaction(async (tx: any) => {
+      const orders = (await tx.$queryRawUnsafe(
+        `SELECT * FROM "purchase_orders" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1 FOR UPDATE`,
         id,
-      ) as any[];
-      await this.updateStock(client, id, items);
-    }
+      )) as any[];
+      if (!orders || orders.length === 0) throw new NotFoundException('Purchase order not found');
+
+      const order = orders[0];
+      const wasReceived = order.status === 'RECEIVED';
+      const nowReceived = body.status === 'RECEIVED';
+
+      if (wasReceived !== nowReceived) {
+        const items = (await tx.$queryRawUnsafe(
+          `SELECT "productId", "quantity" FROM "purchase_items" WHERE "purchaseOrderId" = $1::uuid`,
+          id,
+        )) as any[];
+
+        for (const [productId, qty] of groupQtyByProduct(items)) {
+          if (nowReceived) {
+            await stockIn(tx, productId, qty, order.orderNumber, 'Purchase received');
+          } else {
+            // Un-receiving: take the stock back out (blocked if already sold)
+            await stockOut(tx, productId, qty, order.orderNumber, `Purchase status → ${body.status}`);
+          }
+        }
+      }
+
+      await tx.$queryRawUnsafe(
+        `UPDATE "purchase_orders" SET "status" = $1, "updatedAt" = NOW() WHERE "id" = $2::uuid`,
+        body.status,
+        id,
+      );
+    }, TX_OPTIONS);
 
     return { success: true, message: 'Status updated successfully' };
   }
 
-  private async updateStock(client: any, orderId: string, items: any[]) {
-    for (const item of items) {
-      await client.$queryRawUnsafe(
-        `UPDATE "products"
-         SET "stock" = "stock" + $1, "updatedAt" = NOW()
-         WHERE "id" = $2::uuid`,
-        parseFloat(item.quantity),
-        item.productId,
-      );
-
-      // Log inventory transaction
-      await client.$queryRawUnsafe(
-        `INSERT INTO "inventory_transactions" (
-          "id", "productId", "type", "quantity", "reference"
-        ) VALUES (gen_random_uuid(), $1::uuid, 'IN', $2, $3)`,
-        item.productId,
-        parseFloat(item.quantity),
-        orderId,
-      );
-    }
-  }
-
   async remove(slug: string, id: string) {
     const client = await this.tenantService.getTenantClient(slug);
-    await client.$queryRawUnsafe(
-      `UPDATE "purchase_orders" SET "isDeleted" = true, "deletedAt" = NOW() WHERE "id" = $1::uuid`,
-      id,
-    );
+
+    await client.$transaction(async (tx: any) => {
+      const orders = (await tx.$queryRawUnsafe(
+        `SELECT * FROM "purchase_orders" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1 FOR UPDATE`,
+        id,
+      )) as any[];
+      if (!orders || orders.length === 0) throw new NotFoundException('Purchase order not found');
+      const order = orders[0];
+
+      // Deleting a received order removes its stock again
+      if (order.status === 'RECEIVED') {
+        const items = (await tx.$queryRawUnsafe(
+          `SELECT "productId", "quantity" FROM "purchase_items" WHERE "purchaseOrderId" = $1::uuid`,
+          id,
+        )) as any[];
+        for (const [productId, qty] of groupQtyByProduct(items)) {
+          await stockOut(tx, productId, qty, order.orderNumber, 'Purchase order deleted');
+        }
+      }
+
+      await tx.$queryRawUnsafe(
+        `UPDATE "purchase_orders" SET "isDeleted" = true, "deletedAt" = NOW() WHERE "id" = $1::uuid`,
+        id,
+      );
+    }, TX_OPTIONS);
+
     return { success: true, message: 'Purchase order deleted successfully' };
   }
 

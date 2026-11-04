@@ -45,8 +45,8 @@ export default function PurchaseOrderDetailClient({ id }: { id: string }) {
       )
       toast.success('Order received — stock updated!')
       fetchOrder(subdomain)
-    } catch {
-      toast.error('Failed to update status')
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to update status')
     } finally {
       setUpdating(false)
     }

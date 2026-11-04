@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import { ensureTenantUpgrades, nextDocNumber } from './tenant-doc.helper';
 
 @Injectable()
 export class TenantFinanceService {
@@ -148,12 +149,9 @@ export class TenantFinanceService {
       throw new BadRequestException(`Journal must balance. Debit: ${totalDebit}, Credit: ${totalCredit}`);
     }
 
-    // Generate entry number
-    const countResult = await client.$queryRawUnsafe(
-      `SELECT COUNT(*) as count FROM "journal_entries"`,
-    ) as any[];
-    const count = Number(countResult[0].count) + 1;
-    const entryNumber = `JV-${String(count).padStart(5, '0')}`;
+    // Generate entry number (unique, never repeats)
+    await ensureTenantUpgrades(client, slug);
+    const entryNumber = await nextDocNumber(client, 'journal');
 
     const journalResult = await client.$queryRawUnsafe(
       `INSERT INTO "journal_entries" ("id", "entryNumber", "description", "totalDebit", "totalCredit", "reference")

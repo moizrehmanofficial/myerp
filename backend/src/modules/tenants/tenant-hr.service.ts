@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import { ensureTenantUpgrades, nextDocNumber } from './tenant-doc.helper';
 import { TenantAuditService } from './tenant-audit.service';
 
 @Injectable()
@@ -63,12 +64,9 @@ export class TenantHRService {
   async createEmployee(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
 
-    // Generate employee code
-    const countResult = await client.$queryRawUnsafe(
-      `SELECT COUNT(*) as count FROM "employees"`,
-    ) as any[];
-    const count = Number(countResult[0].count) + 1;
-    const employeeCode = `EMP-${String(count).padStart(4, '0')}`;
+    // Generate employee code (unique, never repeats)
+    await ensureTenantUpgrades(client, slug);
+    const employeeCode = await nextDocNumber(client, 'employee');
 
     const result = await client.$queryRawUnsafe(
       `INSERT INTO "employees" (

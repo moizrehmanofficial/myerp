@@ -1,5 +1,6 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import { ensureTenantUpgrades, nextDocNumber, TX_OPTIONS, round2 } from './tenant-doc.helper';
 
 @Injectable()
 export class TenantSalesService {
@@ -75,62 +76,65 @@ export class TenantSalesService {
 
   async create(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
-    // Generate order number
-    const countResult = await client.$queryRawUnsafe(
-      `SELECT COUNT(*) as count FROM "sales_orders"`
-    ) as any[];
-    const count = parseInt(countResult[0].count) + 1;
-    const orderNumber = `SO-${String(count).padStart(5, '0')}`;
+    if (!body.customerId) throw new BadRequestException('Please select a customer');
+    const items = (Array.isArray(body.items) ? body.items : [])
+      .filter((i: any) => i && i.productId)
+      .map((i: any) => {
+        const quantity = Number(i.quantity);
+        const unitPrice = Number(i.unitPrice);
+        const discount = Number(i.discount) || 0;
+        if (!(quantity > 0)) throw new BadRequestException('Quantity must be greater than 0');
+        if (!(unitPrice >= 0) || discount < 0) throw new BadRequestException('Invalid price or discount');
+        return { ...i, quantity, unitPrice, discount, totalPrice: round2(quantity * unitPrice - discount) };
+      });
+    if (items.length === 0) throw new BadRequestException('Add at least one product');
 
-    const items = body.items || [];
-    let subtotal = 0;
-    items.forEach((item: any) => {
-      subtotal += parseFloat(item.quantity) * parseFloat(item.unitPrice);
-    });
+    // Subtotal = sum of line totals (after item discounts), same as invoices
+    const subtotal = round2(items.reduce((sum: number, i: any) => sum + i.totalPrice, 0));
+    const discount = Number(body.discount) || 0;
+    const tax = Number(body.tax) || 0;
+    const totalAmount = round2(subtotal - discount + tax);
 
-    const discount = parseFloat(body.discount) || 0;
-    const tax = parseFloat(body.tax) || 0;
-    const totalAmount = subtotal - discount + tax;
+    // NOTE: Sales orders do NOT change stock any more.
+    // Stock goes down only when a sale INVOICE is created.
+    const order = await client.$transaction(async (tx: any) => {
+      const orderNumber = await nextDocNumber(tx, 'sales');
 
-    const orderResult = await client.$queryRawUnsafe(
-      `INSERT INTO "sales_orders" (
-        "id", "orderNumber", "customerId", "status",
-        "subtotal", "discount", "tax", "totalAmount", "notes"
-      ) VALUES (
-        gen_random_uuid(), $1, $2::uuid, $3, $4, $5, $6, $7, $8
-      ) RETURNING *`,
-      orderNumber,
-      body.customerId,
-      body.status || 'PENDING',
-      subtotal,
-      discount,
-      tax,
-      totalAmount,
-      body.notes || null,
-    ) as any[];
+      const orderResult = (await tx.$queryRawUnsafe(
+        `INSERT INTO "sales_orders" (
+          "id", "orderNumber", "customerId", "status",
+          "subtotal", "discount", "tax", "totalAmount", "notes"
+        ) VALUES (
+          gen_random_uuid(), $1, $2::uuid, $3, $4, $5, $6, $7, $8
+        ) RETURNING *`,
+        orderNumber,
+        body.customerId,
+        body.status || 'PENDING',
+        subtotal,
+        discount,
+        tax,
+        totalAmount,
+        body.notes || null,
+      )) as any[];
+      const created = orderResult[0];
 
-    const order = orderResult[0];
-
-    for (const item of items) {
-      const totalPrice = parseFloat(item.quantity) * parseFloat(item.unitPrice) - (parseFloat(item.discount) || 0);
-      await client.$queryRawUnsafe(
-        `INSERT INTO "sales_items" (
-          "id", "salesOrderId", "productId", "quantity", "unitPrice", "discount", "totalPrice"
-        ) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6)`,
-        order.id,
-        item.productId,
-        parseFloat(item.quantity),
-        parseFloat(item.unitPrice),
-        parseFloat(item.discount) || 0,
-        totalPrice,
-      );
-    }
-
-    // If status DELIVERED — deduct stock
-    if (body.status === 'DELIVERED') {
-      await this.deductStock(client, items);
-    }
+      for (const item of items) {
+        await tx.$queryRawUnsafe(
+          `INSERT INTO "sales_items" (
+            "id", "salesOrderId", "productId", "quantity", "unitPrice", "discount", "totalPrice"
+          ) VALUES (gen_random_uuid(), $1::uuid, $2::uuid, $3, $4, $5, $6)`,
+          created.id,
+          item.productId,
+          item.quantity,
+          item.unitPrice,
+          item.discount,
+          item.totalPrice,
+        );
+      }
+      return created;
+    }, TX_OPTIONS);
 
     return { success: true, message: 'Sales order created successfully', data: order };
   }
@@ -145,44 +149,12 @@ export class TenantSalesService {
 
     if (!orders || orders.length === 0) throw new NotFoundException('Sales order not found');
 
-    const order = orders[0];
-    const wasDelivered = order.status === 'DELIVERED';
-    const nowDelivered = body.status === 'DELIVERED';
-
     await client.$queryRawUnsafe(
       `UPDATE "sales_orders" SET "status" = $1, "updatedAt" = NOW() WHERE "id" = $2::uuid`,
       body.status, id,
     );
 
-    // Deduct stock when marked DELIVERED
-    if (!wasDelivered && nowDelivered) {
-      const items = await client.$queryRawUnsafe(
-        `SELECT * FROM "sales_items" WHERE "salesOrderId" = $1::uuid`, id,
-      ) as any[];
-      await this.deductStock(client, items);
-    }
-
     return { success: true, message: 'Status updated successfully' };
-  }
-
-  private async deductStock(client: any, items: any[]) {
-    for (const item of items) {
-      await client.$queryRawUnsafe(
-        `UPDATE "products"
-         SET "stock" = "stock" - $1, "updatedAt" = NOW()
-         WHERE "id" = $2::uuid`,
-        parseFloat(item.quantity),
-        item.productId,
-      );
-
-      await client.$queryRawUnsafe(
-        `INSERT INTO "inventory_transactions" (
-          "id", "productId", "type", "quantity", "reference"
-        ) VALUES (gen_random_uuid(), $1::uuid, 'OUT', $2, 'SALES_ORDER')`,
-        item.productId,
-        parseFloat(item.quantity),
-      );
-    }
   }
 
   async remove(slug: string, id: string) {

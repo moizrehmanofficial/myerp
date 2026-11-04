@@ -104,8 +104,10 @@ export default function InvoiceEditClient({ id }: { id: string }) {
     setItems(updated)
   }
 
+  // Same as backend: line total = qty × price − item discount
   const subtotal = items.reduce((sum, item) => {
-    return sum + (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)
+    const lineTotal = (parseFloat(item.quantity) || 0) * (parseFloat(item.unitPrice) || 0)
+    return sum + lineTotal - (parseFloat(item.discount) || 0)
   }, 0)
 
   const discount = parseFloat(form.discount) || 0

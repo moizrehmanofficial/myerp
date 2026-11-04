@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import { ensureTenantUpgrades, nextDocNumber } from './tenant-doc.helper';
 
 @Injectable()
 export class TenantReturnsService {
@@ -38,11 +39,8 @@ export class TenantReturnsService {
   async createPurchaseReturn(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
 
-    const countResult = await client.$queryRawUnsafe(
-      `SELECT COUNT(*) as count FROM "purchase_returns"`,
-    ) as any[];
-    const count = Number(countResult[0].count) + 1;
-    const returnNumber = `PR-${String(count).padStart(5, '0')}`;
+    await ensureTenantUpgrades(client, slug);
+    const returnNumber = await nextDocNumber(client, 'purchaseReturn');
 
     const items = body.items || [];
     let totalAmount = 0;
@@ -133,11 +131,8 @@ export class TenantReturnsService {
   async createSaleReturn(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
 
-    const countResult = await client.$queryRawUnsafe(
-      `SELECT COUNT(*) as count FROM "sale_returns"`,
-    ) as any[];
-    const count = Number(countResult[0].count) + 1;
-    const returnNumber = `SR-${String(count).padStart(5, '0')}`;
+    await ensureTenantUpgrades(client, slug);
+    const returnNumber = await nextDocNumber(client, 'saleReturn');
 
     const items = body.items || [];
     let totalAmount = 0;

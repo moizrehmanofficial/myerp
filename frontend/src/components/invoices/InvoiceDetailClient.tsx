@@ -52,8 +52,8 @@ export default function InvoiceDetailClient({ id }: { id: string }) {
       setShowPaymentModal(false)
       setPaymentAmount('')
       fetchInvoice(subdomain)
-    } catch {
-      toast.error('Failed to record payment')
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to record payment')
     } finally {
       setPaying(false)
     }

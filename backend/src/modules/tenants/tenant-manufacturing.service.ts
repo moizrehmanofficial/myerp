@@ -1,5 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { TenantService } from './tenant.service';
+import { ensureTenantUpgrades, nextDocNumber } from './tenant-doc.helper';
 
 @Injectable()
 export class TenantManufacturingService {
@@ -61,11 +62,8 @@ export class TenantManufacturingService {
   async create(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
 
-    const countResult = await client.$queryRawUnsafe(
-      `SELECT COUNT(*) as count FROM "manufacturing_orders"`,
-    ) as any[];
-    const count = Number(countResult[0].count) + 1;
-    const orderNumber = `MO-${String(count).padStart(5, '0')}`;
+    await ensureTenantUpgrades(client, slug);
+    const orderNumber = await nextDocNumber(client, 'manufacturing');
 
     const orderResult = await client.$queryRawUnsafe(
       `INSERT INTO "manufacturing_orders" (

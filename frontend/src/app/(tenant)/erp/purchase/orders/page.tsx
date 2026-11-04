@@ -60,8 +60,8 @@ export default function PurchaseOrdersPage() {
       await getApi(subdomain).patch(`/erp/purchase/orders/${id}/status`, { status: 'RECEIVED' })
       toast.success('Order marked as received — stock updated!')
       fetchOrders(subdomain, search, page, limit)
-    } catch {
-      toast.error('Failed to update status')
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to update status')
     }
   }
 
@@ -71,8 +71,8 @@ export default function PurchaseOrdersPage() {
       await getApi(subdomain).delete(`/erp/purchase/orders/${id}`)
       toast.success('Purchase order deleted')
       fetchOrders(subdomain, search, page, limit)
-    } catch {
-      toast.error('Failed to delete order')
+    } catch (err: any) {
+      toast.error(err?.response?.data?.message || 'Failed to delete order')
     }
   }
 
