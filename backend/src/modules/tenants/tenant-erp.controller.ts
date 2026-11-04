@@ -11,7 +11,9 @@ import {
   Req,
   UnauthorizedException,
   ForbiddenException,
+  UseGuards,
 } from '@nestjs/common';
+import { TenantPermissionGuard, userCan } from '../../common/guards/tenant-permission.guard';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { TenantCustomersService } from './tenant-customers.service';
@@ -34,6 +36,7 @@ import { TenantSalarySlipService } from './tenant-salary-slip.service';
 import { TenantLeaveService } from './tenant-leave.service';
 
 @Controller('erp')
+@UseGuards(TenantPermissionGuard)
 export class TenantErpController {
   constructor(
     private customersService: TenantCustomersService,
@@ -98,7 +101,35 @@ export class TenantErpController {
   async getDashboardStats(@Req() req: any) {
     const payload = this.getPayload(req);
     const slug = this.getSlug(req, payload);
-    return this.dashboardService.getStats(slug);
+    const result: any = await this.dashboardService.getStats(slug);
+    const d = result?.data || {};
+
+    // Hide numbers the user is not allowed to see
+    const canMoney = userCan(req, 'invoices') || userCan(req, 'sales') || userCan(req, 'finance');
+    const canPurchase = userCan(req, 'purchase');
+    const canSales = userCan(req, 'sales');
+    const canContacts = userCan(req, 'contacts');
+    const canStock = userCan(req, 'products') || userCan(req, 'inventory');
+    const canHr = userCan(req, 'hr');
+
+    if (!canMoney) {
+      Object.assign(d, {
+        totalInvoices: 0, totalRevenue: 0, totalCollected: 0, totalDue: 0,
+        unpaidInvoices: 0, partialInvoices: 0, accountsReceivable: 0,
+        monthlyRevenue: 0, recentInvoices: [], topProducts: [], monthlyRevenueTrend: [],
+      });
+    }
+    if (!canSales) Object.assign(d, { monthlySalesCount: 0, monthlySalesTotal: 0 });
+    if (!canPurchase) Object.assign(d, { monthlyPurchaseCount: 0, monthlyPurchaseTotal: 0, recentPurchases: [] });
+    if (!canContacts) Object.assign(d, { totalCustomers: 0, totalSuppliers: 0 });
+    if (!canStock) Object.assign(d, { totalProducts: 0, lowStockCount: 0 });
+    if (!canHr) Object.assign(d, { activeEmployees: 0 });
+
+    d.visibleSections = {
+      money: canMoney, sales: canSales, purchase: canPurchase,
+      contacts: canContacts, stock: canStock, hr: canHr,
+    };
+    return result;
   }
 
   // ── CUSTOMERS ─────────────────────────────────────────

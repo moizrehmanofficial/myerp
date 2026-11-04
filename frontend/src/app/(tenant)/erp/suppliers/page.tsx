@@ -7,8 +7,10 @@ import TenantLayout from '@/components/layout/TenantLayout'
 import ExportButton from '@/components/common/ExportButton'
 import Pagination from '@/components/common/Pagination'
 import { getTenantSlug } from '@/lib/getTenantSlug'
+import { usePermission } from '@/hooks/usePermission'
 
 export default function SuppliersPage() {
+  const { canWrite, canModify, canDelete } = usePermission()
   const [suppliers, setSuppliers] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -132,12 +134,14 @@ export default function SuppliersPage() {
               { header: 'Balance (PKR)', value: (r) => parseFloat(r.balance || 0).toFixed(2), width: 18 },
             ]}
           />
+          {canWrite('contacts') && (
           <button onClick={() => setShowModal(true)} style={{
             padding: '10px 18px', background: '#1E3A5F',
             color: '#fff', border: 'none', borderRadius: '10px',
             fontSize: '13px', fontWeight: 600, cursor: 'pointer',
             fontFamily: 'Inter, sans-serif',
           }}>➕ Add Supplier</button>
+          )}
         </div>
       }
     >
@@ -241,6 +245,7 @@ export default function SuppliersPage() {
                   </td>
                   <td style={{ padding: '14px 16px' }}>
                     <div style={{ display: 'flex', gap: '8px' }}>
+                      {canModify('contacts') && (
                       <button onClick={() => openEdit(s)} style={{
                         padding: '6px 12px', background: '#EFF6FF',
                         color: '#1D4ED8', border: '1px solid #BFDBFE',
@@ -248,6 +253,8 @@ export default function SuppliersPage() {
                         fontWeight: 600, cursor: 'pointer',
                         fontFamily: 'Inter, sans-serif',
                       }}>Edit</button>
+                      )}
+                      {canDelete('contacts') && (
                       <button onClick={() => handleDelete(s.id)} style={{
                         padding: '6px 12px', background: '#FEF2F2',
                         color: '#DC2626', border: '1px solid #FECACA',
@@ -255,6 +262,10 @@ export default function SuppliersPage() {
                         fontWeight: 600, cursor: 'pointer',
                         fontFamily: 'Inter, sans-serif',
                       }}>Delete</button>
+                      )}
+                      {!canModify('contacts') && !canDelete('contacts') && (
+                        <span style={{ color: '#94A3B8', fontSize: '13px' }}>—</span>
+                      )}
                     </div>
                   </td>
                 </tr>

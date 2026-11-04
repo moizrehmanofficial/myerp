@@ -346,7 +346,14 @@ export default function TenantSidebar({ activePath, user, subdomain }: TenantSid
                   borderLeft: '1px solid rgba(255,255,255,0.1)',
                   marginBottom: '4px',
                 }}>
-                  {group.children?.map((child) => {
+                  {group.children
+                    ?.filter((child) =>
+                      // Audit Log only for owner or roles with Settings access
+                      child.path !== '/erp/audit-logs' ||
+                      user?.isOwner ||
+                      moduleKeys.includes('settings'),
+                    )
+                    .map((child) => {
                     const isChildActive = activePath === child.path
                     return (
                                             <button
