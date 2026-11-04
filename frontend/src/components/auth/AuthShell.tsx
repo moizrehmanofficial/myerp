@@ -1,15 +1,17 @@
 'use client'
 
 import { Toaster } from 'react-hot-toast'
-import { Building2 } from 'lucide-react'
+import { Layers } from 'lucide-react'
 
-// Shared sign-in layout. Left panel (laptop and up) carries the brand on a
-// ledger-paper pattern; on phones only the form shows, with a compact header.
+// Shared sign-in layout.
+// Right: a card with the company's logo and name, then the form (all screens).
+// Left (laptop and up): the MyERP product panel. Plain navy, no patterns.
 export function AuthShell({
   brand,
   brandSub,
   logoUrl,
   icon,
+  headline = 'Run sales, stock, accounts and people from one place.',
   points,
   children,
 }: {
@@ -17,69 +19,75 @@ export function AuthShell({
   brandSub: string
   logoUrl?: string
   icon?: React.ReactNode
-  points: string[]
+  headline?: string
+  points: { icon: React.ReactNode; title: string; text: string }[]
   children: React.ReactNode
 }) {
-  const mark = (
-    <span className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-xl bg-white/10 text-white">
-      {logoUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={logoUrl} alt="" className="size-full object-contain p-1.5" />
-      ) : (
-        icon || <Building2 className="size-5" strokeWidth={1.8} aria-hidden />
-      )}
-    </span>
-  )
+  const initials = brand
+    .split(/[\s-]+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0])
+    .join('')
+    .toUpperCase()
 
   return (
     <div className="flex min-h-screen bg-canvas">
       <Toaster position="top-right" toastOptions={{ style: { fontSize: '14px', borderRadius: '10px' } }} />
 
-      <aside
-        className="relative hidden w-[44%] max-w-[620px] flex-col justify-between overflow-hidden bg-nav p-10 text-white lg:flex xl:p-14"
-        style={{
-          backgroundImage:
-            'repeating-linear-gradient(to bottom, transparent 0, transparent 31px, rgba(255,255,255,0.045) 31px, rgba(255,255,255,0.045) 32px)',
-        }}
-      >
-        {/* ledger margin line */}
-        <span className="pointer-events-none absolute inset-y-0 left-[76px] w-px bg-[#2dd4bf]/25" aria-hidden />
-        <div className="relative flex items-center gap-3 pl-12">
-          {mark}
-          <div>
-            <p className="text-lg leading-tight font-semibold capitalize">{brand}</p>
-            <p className="text-[13px] text-nav-muted">{brandSub}</p>
-          </div>
+      {/* Product panel */}
+      <aside className="hidden w-[42%] max-w-[600px] flex-col justify-between bg-nav px-12 py-10 text-white lg:flex xl:px-16 xl:py-14">
+        <div className="flex items-center gap-2.5">
+          <span className="flex size-8 items-center justify-center rounded-lg bg-white/10">
+            <Layers className="size-[18px]" strokeWidth={1.8} aria-hidden />
+          </span>
+          <span className="text-[15px] font-semibold tracking-tight">MyERP</span>
         </div>
 
-        <div className="relative pl-12">
-          <p className="max-w-md text-[28px] leading-[1.25] font-semibold xl:text-[32px]">
-            Sales, stock, accounts and staff in one place.
-          </p>
-          <ul className="mt-8 flex flex-col gap-4">
+        <div>
+          <h2 className="max-w-md text-[32px] leading-[1.2] font-semibold tracking-tight xl:text-[36px]">
+            {headline}
+          </h2>
+          <ul className="mt-10 flex flex-col gap-6">
             {points.map((p) => (
-              <li key={p} className="flex gap-3 text-[15px] text-nav-text">
-                <span className="mt-[9px] size-1.5 shrink-0 rounded-full bg-[#2dd4bf]" aria-hidden />
-                {p}
+              <li key={p.title} className="flex gap-4">
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-white/[0.08] text-white [&>svg]:size-5">
+                  {p.icon}
+                </span>
+                <div>
+                  <p className="text-[15px] font-medium text-white">{p.title}</p>
+                  <p className="mt-0.5 text-sm leading-relaxed text-nav-text">{p.text}</p>
+                </div>
               </li>
             ))}
           </ul>
         </div>
 
-        <p className="relative pl-12 text-xs text-nav-muted">© {new Date().getFullYear()} MyERP</p>
+        <p className="text-xs text-nav-muted">© {new Date().getFullYear()} MyERP. All rights reserved.</p>
       </aside>
 
-      <main className="flex flex-1 flex-col">
-        {/* Phone / tablet header */}
-        <div className="flex items-center gap-3 bg-nav px-5 py-4 text-white lg:hidden">
-          {mark}
-          <div className="min-w-0">
-            <p className="truncate font-semibold capitalize">{brand}</p>
-            <p className="text-xs text-nav-muted">{brandSub}</p>
+      {/* Sign-in */}
+      <main className="flex flex-1 items-center justify-center px-4 py-10 sm:px-8">
+        <div className="w-full max-w-[440px]">
+          <div className="rounded-2xl border border-line bg-surface px-6 py-8 shadow-[0_1px_2px_rgba(16,24,40,0.04),0_8px_24px_rgba(16,24,40,0.06)] sm:px-10 sm:py-10">
+            {/* Who you are signing in to */}
+            <div className="mb-8 flex flex-col items-center text-center">
+              <span className="flex size-20 items-center justify-center overflow-hidden rounded-2xl border border-line bg-white">
+                {logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={logoUrl} alt={`${brand} logo`} className="size-full object-contain p-2.5" />
+                ) : icon ? (
+                  <span className="flex size-full items-center justify-center bg-nav text-white [&>svg]:size-8">{icon}</span>
+                ) : (
+                  <span className="flex size-full items-center justify-center bg-nav text-2xl font-semibold text-white">{initials || 'M'}</span>
+                )}
+              </span>
+              <p className="mt-4 text-2xl leading-tight font-semibold tracking-tight text-ink">{brand}</p>
+              <p className="mt-1 text-sm text-ink-3">{brandSub}</p>
+            </div>
+            {children}
           </div>
-        </div>
-        <div className="flex flex-1 items-center justify-center px-5 py-10 sm:px-8">
-          <div className="w-full max-w-[400px]">{children}</div>
+          <p className="mt-6 text-center text-xs text-ink-3 lg:hidden">© {new Date().getFullYear()} MyERP</p>
         </div>
       </main>
     </div>

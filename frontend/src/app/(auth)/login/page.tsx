@@ -3,7 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
-import { ShieldCheck } from 'lucide-react'
+import { ShieldCheck, Building2, Puzzle, HardDrive } from 'lucide-react'
 import api from '@/lib/axios'
 import { AuthShell } from '@/components/auth/AuthShell'
 import { LoginForm, loginErrorMessage } from '@/components/auth/LoginForm'
@@ -54,10 +54,11 @@ export default function LoginPage() {
       brand="MyERP"
       brandSub="Platform administration"
       icon={<ShieldCheck className="size-5" strokeWidth={1.8} aria-hidden />}
+      headline="Manage every company on MyERP from one place."
       points={[
-        'Create a workspace for each client company',
-        'Choose which modules every company gets',
-        'Watch backups and subscriptions in one list',
+        { icon: <Building2 />, title: 'Company workspaces', text: 'Create a separate, private workspace for each client company.' },
+        { icon: <Puzzle />, title: 'Modules per company', text: 'Choose exactly which parts of the ERP every company gets.' },
+        { icon: <HardDrive />, title: 'Backups in one list', text: 'See every backup and download one when you need it.' },
       ]}
     >
       <LoginForm

@@ -7,6 +7,7 @@ import axios from 'axios'
 import { AuthShell } from '@/components/auth/AuthShell'
 import { LoginForm, loginErrorMessage } from '@/components/auth/LoginForm'
 import { Button, Field, Input } from '@/components/ui'
+import { ChartColumn, Package, Receipt } from 'lucide-react'
 
 export default function TenantLoginPage() {
   return (
@@ -79,29 +80,29 @@ function TenantLoginForm() {
   return (
     <AuthShell
       brand={companyName || 'MyERP'}
-      brandSub={companyName ? 'Company workspace' : 'Business management'}
+      brandSub={companyName ? 'Company workspace' : 'Business management software'}
       logoUrl={companyLogo || undefined}
       points={[
-        'Create invoices and track who has paid',
-        'Know your stock levels at a glance',
-        'Accounts and reports that update themselves',
+        { icon: <Receipt />, title: 'Invoices and payments', text: 'Bill customers and see at once who still owes you.' },
+        { icon: <Package />, title: 'Stock you can trust', text: 'Every sale, purchase and return updates stock by itself.' },
+        { icon: <ChartColumn />, title: 'Books that keep themselves', text: 'Ledger, profit and loss and balance sheet, always up to date.' },
       ]}
     >
       {!ready ? null : subdomain ? (
         <LoginForm
           title="Sign in"
-          description={`Use the email and password your ${companyName || 'company'} admin gave you.`}
+          description="Use the email and password your company admin gave you."
           loading={loading}
           onSubmit={handleLogin}
           footer="Forgot your password? Ask your company owner to reset it."
         />
       ) : (
         <form onSubmit={openCompany}>
-          <h1 className="text-[22px] font-semibold text-ink">Find your company</h1>
-          <p className="mt-1 text-sm text-ink-3">
-            Enter your company code. It is the first part of your company&apos;s MyERP link.
-          </p>
-          <div className="mt-7 flex flex-col gap-4">
+          <div className="border-t border-line pt-6 text-center">
+            <h1 className="text-[17px] font-semibold text-ink">Find your company</h1>
+            <p className="mt-1 text-[13px] leading-relaxed text-ink-3">Enter your company code. Your company admin can tell you what it is.</p>
+          </div>
+          <div className="mt-6 flex flex-col gap-4">
             <Field label="Company code" hint="For example: vertex-solutions">
               {(id) => (
                 <Input id={id} value={code} onChange={(e) => setCode(e.target.value)} className="h-11" autoFocus autoCapitalize="none" />

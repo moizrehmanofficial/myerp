@@ -35,10 +35,12 @@ export function LoginForm({
 
   return (
     <form onSubmit={submit} noValidate>
-      <h1 className="text-[22px] font-semibold text-ink">{title}</h1>
-      <p className="mt-1 text-sm text-ink-3">{description}</p>
+      <div className="border-t border-line pt-6 text-center">
+        <h1 className="text-[17px] font-semibold text-ink">{title}</h1>
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>
+      </div>
 
-      <div className="mt-7 flex flex-col gap-4">
+      <div className="mt-6 flex flex-col gap-4">
         <Field label="Email">
           {(id) => (
             <Input
