@@ -3,13 +3,15 @@
 import { useEffect, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import axios from 'axios'
-import { Toaster } from 'react-hot-toast'
+import toast, { Toaster } from 'react-hot-toast'
 import { Lock, Menu } from 'lucide-react'
 import TenantSidebar from './TenantSidebar'
 import { ALWAYS_VISIBLE } from './tenantNav'
 import { Button, EmptyState } from '@/components/ui'
 import { cn } from '@/utils/utils'
 import { installTenantAuthInterceptor } from '@/lib/tenantAuthInterceptor'
+import { NEW_LOGIN_ID_KEY, restoreTenantSession, saveTenantSession } from '@/lib/tenantSession'
+
 
 // Auto-refresh expired login (15 min) for every tenant page
 installTenantAuthInterceptor()
@@ -25,6 +27,7 @@ interface TenantLayoutProps {
 const COLLAPSE_KEY = 'erp_sidebar_collapsed'
 
 function readSlug() {
+  restoreTenantSession()
   const host = window.location.hostname
   const parts = host.split('.')
   // Priority: saved slug from login > real subdomain > 'localhost'
@@ -48,8 +51,31 @@ export default function TenantLayout({ children, title, subtitle, headerRight, r
   const [mobileOpen, setMobileOpen] = useState(false)
 
   useEffect(() => {
+    // Old links carry ?company=slug: remember it, then show the clean address
+    const params = new URLSearchParams(window.location.search)
+    const fromUrl = params.get('company')
+    if (fromUrl && /^[a-z0-9-]+$/.test(fromUrl)) {
+      try {
+        const u = sessionStorage.getItem(`tenant_user_${fromUrl}`)
+        sessionStorage.setItem('tenant_slug_current', fromUrl)
+        if (u) saveTenantSession(fromUrl, JSON.parse(u), sessionStorage.getItem(`tenant_company_${fromUrl}`))
+      } catch {}
+      params.delete('company')
+      const rest = params.toString()
+      window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}${window.location.hash}`)
+    }
+
     const sub = readSlug()
     setSubdomain(sub)
+
+    // Signed in the old way: show the new login ID once
+    try {
+      const newId = sessionStorage.getItem(NEW_LOGIN_ID_KEY)
+      if (newId) {
+        sessionStorage.removeItem(NEW_LOGIN_ID_KEY)
+        toast(`From now on, sign in with your login ID: ${newId}`, { duration: 12000, id: 'new-login-id' })
+      }
+    } catch {}
 
     try {
       setCollapsed(localStorage.getItem(COLLAPSE_KEY) === '1')
@@ -57,14 +83,14 @@ export default function TenantLayout({ children, title, subtitle, headerRight, r
 
     const cachedUser = sessionStorage.getItem(`tenant_user_${sub}`)
     if (!cachedUser) {
-      router.replace('/erp-login')
+      router.replace('/signin')
       return
     }
 
     try {
       const parsed = JSON.parse(cachedUser)
       if (parsed.slug !== sub) {
-        router.replace('/erp-login')
+        router.replace('/signin')
         return
       }
       setUser(parsed)
@@ -72,7 +98,7 @@ export default function TenantLayout({ children, title, subtitle, headerRight, r
         setBlocked(!(parsed.moduleKeys || []).includes(requiredModule))
       }
     } catch {
-      router.replace('/erp-login')
+      router.replace('/signin')
       return
     }
 

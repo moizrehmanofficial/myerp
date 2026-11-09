@@ -4,6 +4,8 @@ import { TenantAuditService } from './tenant-audit.service';
 import * as bcrypt from 'bcrypt';
 import { MailService } from '../../common/mail/mail.service';
 import { PrismaService } from '../../database/prisma.service';
+import { ensureTenantUpgrades } from './tenant-doc.helper';
+import { cleanUsername } from './tenant-login-id';
 
 @Injectable()
 export class TenantUsersService {
@@ -124,12 +126,16 @@ export class TenantUsersService {
   }
 
   // ── USERS ──────────────────────────────────────────────
+  // Everyone signs in with a login ID "name@company". The owner picks the
+  // name part; the company part is fixed. A real email is optional and only
+  // used for welcome and password reset emails.
 
   async getUsers(slug: string) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
     const users = await client.$queryRawUnsafe(
-      `SELECT u."id", u."name", u."email", u."phone", u."status",
+      `SELECT u."id", u."name", u."username", u."email", u."phone", u."status",
               u."isOwner", u."roleId", u."createdAt",
               r."name" as "roleName", r."moduleKeys" as "roleModuleKeys"
        FROM "users" u
@@ -138,39 +144,61 @@ export class TenantUsersService {
        ORDER BY u."isOwner" DESC, u."createdAt" ASC`,
     ) as any[];
 
-    return { success: true, data: users };
+    return {
+      success: true,
+      data: users.map((u) => ({ ...u, loginId: u.username ? `${u.username}@${slug}` : null })),
+    };
+  }
+
+  // Checks the login name and email the owner typed
+  private async checkIdentity(client: any, body: any, exceptId?: string) {
+    const username = cleanUsername(body.username);
+    if (!username) {
+      throw new BadRequestException('Login name: 1 to 40 letters or numbers. Dots, dashes and underscores are fine in the middle. No spaces.');
+    }
+    const taken = (await client.$queryRawUnsafe(
+      `SELECT "id" FROM "users" WHERE LOWER("username") = $1 AND "isDeleted" = false AND ($2::uuid IS NULL OR "id" <> $2::uuid) LIMIT 1`,
+      username,
+      exceptId || null,
+    )) as any[];
+    if (taken.length) throw new BadRequestException(`The login name "${username}" is already used in this company`);
+
+    const email = String(body.email || '').trim().toLowerCase() || null;
+    if (email) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new BadRequestException('Enter a valid email address, or leave it empty');
+      const used = (await client.$queryRawUnsafe(
+        `SELECT "id" FROM "users" WHERE LOWER("email") = $1 AND "isDeleted" = false AND ($2::uuid IS NULL OR "id" <> $2::uuid) LIMIT 1`,
+        email,
+        exceptId || null,
+      )) as any[];
+      if (used.length) throw new BadRequestException('Another user in this company already has that email');
+    }
+    return { username, email };
   }
 
   async createUser(slug: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
     body.name = String(body.name || '').trim();
-    body.email = String(body.email || '').trim().toLowerCase();
     if (!body.name) throw new BadRequestException('Enter the person’s name');
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.email)) throw new BadRequestException('Enter a valid email address');
     if (String(body.password || '').length < 8) throw new BadRequestException('Password must be at least 8 characters');
-
-    const existing = await client.$queryRawUnsafe(
-      `SELECT id FROM "users" WHERE LOWER("email") = $1 AND "isDeleted" = false LIMIT 1`,
-      body.email,
-    ) as any[];
-
-    if (existing.length > 0) {
-      throw new BadRequestException('Email already exists');
-    }
+    const { username, email } = await this.checkIdentity(client, body);
+    const loginId = `${username}@${slug}`;
 
     const hashedPassword = await bcrypt.hash(body.password, 10);
 
     const result = await client.$queryRawUnsafe(
       `INSERT INTO "users" (
-        "id", "name", "email", "phone", "password",
+        "id", "name", "username", "email", "phone", "password",
         "roleId", "isOwner", "status"
       ) VALUES (
-        gen_random_uuid(), $1, $2, $3, $4,
-        $5::uuid, false, 'ACTIVE'
-      ) RETURNING "id", "name", "email", "phone", "status", "roleId", "createdAt"`,
+        gen_random_uuid(), $1, $2, $3, $4, $5,
+        $6::uuid, false, 'ACTIVE'
+      ) RETURNING "id", "name", "username", "email", "phone", "status", "roleId", "createdAt"`,
       body.name,
-      body.email,
+      username,
+      email,
       body.phone || null,
       hashedPassword,
       body.roleId || null,
@@ -180,34 +208,39 @@ export class TenantUsersService {
       action: 'CREATED',
       module: 'users',
       recordId: result[0].id,
-      description: `User ${body.email} created`,
+      description: `User ${loginId} created`,
     });
 
     // Tell the new person how to sign in (the password is shared by the owner)
-    const company = await this.prisma.company.findUnique({ where: { slug }, select: { name: true } }).catch(() => null);
-    const base = ((process.env.FRONTEND_URL || '').split(',')[0].trim() || 'https://myerp-frontend.vercel.app').replace(/\/$/, '');
-    const emailSent = await this.mail.send(
-      body.email,
-      `You have been added to ${company?.name || 'a company'} on MyERP`,
-      `Welcome, ${body.name}`,
-      [
-        `You now have an account in ${company?.name || 'your company'}'s MyERP workspace.`,
-        `Sign in with ${body.email}. The person who added you will give you the password, or you can set your own with "Forgot password" on the sign-in page.`,
-      ],
-      { label: 'Go to sign in', url: `${base}/erp-login?company=${encodeURIComponent(slug)}` },
-    );
+    let emailSent = false;
+    if (email) {
+      const company = await this.prisma.company.findUnique({ where: { slug }, select: { name: true } }).catch(() => null);
+      const base = ((process.env.FRONTEND_URL || '').split(',')[0].trim() || 'https://myerp-frontend.vercel.app').replace(/\/$/, '');
+      emailSent = await this.mail.send(
+        email,
+        `You have been added to ${company?.name || 'a company'} on MyERP`,
+        `Welcome, ${body.name}`,
+        [
+          `You now have an account in ${company?.name || 'your company'}'s MyERP workspace.`,
+          `Your login ID is ${loginId} (type it exactly like this, without .com). The person who added you will give you the password, or you can set your own with "Forgot password" on the sign-in page.`,
+        ],
+        { label: 'Go to sign in', url: `${base}/signin` },
+      );
+    }
 
-    return { success: true, message: 'User created successfully', data: { ...result[0], emailSent } };
+    return { success: true, message: 'User created successfully', data: { ...result[0], loginId, emailSent } };
   }
 
   async updateUser(slug: string, id: string, body: any) {
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
     const users = await client.$queryRawUnsafe(
-      `SELECT "isOwner" FROM "users" WHERE "id" = $1::uuid LIMIT 1`, id,
+      `SELECT "isOwner", "username" FROM "users" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1`, id,
     ) as any[];
+    if (!users.length) throw new NotFoundException('User not found');
 
-    if (users[0]?.isOwner) {
+    if (users[0].isOwner) {
       throw new BadRequestException('Cannot modify owner account');
     }
     if (!String(body.name || '').trim()) throw new BadRequestException('Enter the person’s name');
@@ -217,38 +250,31 @@ export class TenantUsersService {
     if (body.status && !['ACTIVE', 'INACTIVE', 'SUSPENDED'].includes(body.status)) {
       throw new BadRequestException('Unknown status');
     }
+    // Older screens may not send the login name: keep the current one
+    if (body.username === undefined) body.username = users[0].username;
+    const { username, email } = await this.checkIdentity(client, body, id);
 
-    let result: any[];
-
-    if (body.password) {
-      const hashedPassword = await bcrypt.hash(body.password, 10);
-      result = await client.$queryRawUnsafe(
-        `UPDATE "users"
-         SET "name" = $1, "phone" = $2, "roleId" = $3::uuid,
-             "status" = $4, "password" = $5, "updatedAt" = NOW()
-         WHERE "id" = $6::uuid AND "isDeleted" = false
-         RETURNING "id", "name", "email", "phone", "status", "roleId"`,
-        body.name,
-        body.phone || null,
-        body.roleId || null,
-        body.status || 'ACTIVE',
-        hashedPassword,
-        id,
-      ) as any[];
-    } else {
-      result = await client.$queryRawUnsafe(
-        `UPDATE "users"
-         SET "name" = $1, "phone" = $2, "roleId" = $3::uuid,
-             "status" = $4, "updatedAt" = NOW()
-         WHERE "id" = $5::uuid AND "isDeleted" = false
-         RETURNING "id", "name", "email", "phone", "status", "roleId"`,
-        body.name,
-        body.phone || null,
-        body.roleId || null,
-        body.status || 'ACTIVE',
-        id,
-      ) as any[];
-    }
+    const hashedPassword = body.password ? await bcrypt.hash(body.password, 10) : null;
+    // A new password (or turning the account off) signs the person out everywhere
+    const signOut = !!hashedPassword || (body.status && body.status !== 'ACTIVE');
+    const result = await client.$queryRawUnsafe(
+      `UPDATE "users"
+       SET "name" = $1, "username" = $2, "email" = $3, "phone" = $4, "roleId" = $5::uuid,
+           "status" = $6, "password" = COALESCE($7, "password"),
+           "refreshToken" = CASE WHEN $8 THEN NULL ELSE "refreshToken" END,
+           "updatedAt" = NOW()
+       WHERE "id" = $9::uuid AND "isDeleted" = false
+       RETURNING "id", "name", "username", "email", "phone", "status", "roleId"`,
+      String(body.name).trim(),
+      username,
+      email,
+      body.phone || null,
+      body.roleId || null,
+      body.status || 'ACTIVE',
+      hashedPassword,
+      signOut,
+      id,
+    ) as any[];
 
     if (!result.length) throw new NotFoundException('User not found');
 
@@ -256,10 +282,10 @@ export class TenantUsersService {
       action: 'UPDATED',
       module: 'users',
       recordId: id,
-      description: `User updated`,
+      description: hashedPassword ? `User ${username}@${slug} updated (password reset)` : `User ${username}@${slug} updated`,
     });
 
-    return { success: true, message: 'User updated', data: result[0] };
+    return { success: true, message: 'User updated', data: { ...result[0], loginId: `${username}@${slug}` } };
   }
 
   async deleteUser(slug: string, id: string) {

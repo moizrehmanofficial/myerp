@@ -12,6 +12,8 @@ import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { ConfigService } from '@nestjs/config';
 import { MailService } from '../../common/mail/mail.service';
 import { clearTenantCache } from '../../common/middleware/tenant.middleware';
+import { baseUsername } from '../tenants/tenant-login-id';
+import { ensureTenantUpgrades } from '../tenants/tenant-doc.helper';
 
 @Injectable()
 export class CompaniesService {
@@ -71,10 +73,23 @@ export class CompaniesService {
 
     if (!company) throw new NotFoundException('Company not found');
 
+    // Owner's login ID, so the admin can tell them how to sign in
+    let ownerLoginId: string | null = null;
+    try {
+      const client = await this.tenantService.getTenantClient(company.slug);
+      await ensureTenantUpgrades(client, company.slug);
+      const owners = (await client.$queryRawUnsafe(
+        `SELECT "username" FROM "users" WHERE "isOwner" = true AND "isDeleted" = false ORDER BY "createdAt" LIMIT 1`,
+      )) as any[];
+      if (owners[0]?.username) ownerLoginId = `${owners[0].username}@${company.slug}`;
+    } catch {
+      ownerLoginId = null;
+    }
+
     return {
       success: true,
       message: 'Company fetched successfully',
-      data: company,
+      data: { ...company, ownerLoginId },
     };
   }
 
@@ -92,6 +107,10 @@ export class CompaniesService {
     if (existing) {
       throw new BadRequestException('This subdomain is already taken');
     }
+
+    // Owner signs in as <name>@<slug>
+    const ownerUsername = dto.ownerUsername ? dto.ownerUsername.trim().toLowerCase() : baseUsername(dto.ceoEmail);
+    const ownerLoginId = `${ownerUsername}@${dto.slug}`;
 
     // ── Hash CEO password ──────────────────────────────
     const hashedPassword = await bcrypt.hash(dto.ceoPassword, 10);
@@ -121,6 +140,7 @@ export class CompaniesService {
         dto.ceoEmail.trim().toLowerCase(),
         hashedPassword,
         moduleKeys,
+        ownerUsername,
       );
 
       // ── Build tenant database URL ──────────────────────
@@ -188,9 +208,9 @@ export class CompaniesService {
       `Welcome to MyERP, ${dto.ceoName}`,
       [
         `Your company workspace "${dto.name}" has been created. You are its owner, so you can add your team and choose what each person can do.`,
-        `Sign in with this email address (${dto.ceoEmail}). Your administrator will give you the password, or you can set one yourself with "Forgot password" on the sign-in page.`,
+        `Your login ID is ${ownerLoginId} (type it exactly like this, without .com). Your administrator will give you the password, or you can set one yourself with "Forgot password" on the sign-in page.`,
       ],
-      { label: 'Open your workspace', url: `${frontendUrl}/erp-login?company=${dto.slug}` },
+      { label: 'Sign in', url: `${frontendUrl}/signin` },
     );
 
     clearTenantCache();
@@ -199,8 +219,9 @@ export class CompaniesService {
       message: 'Company ERP created successfully',
       data: {
         ...company,
-        erpUrl: `${frontendUrl}/erp-login?company=${dto.slug}`,
+        erpUrl: `${frontendUrl}/signin`,
         ceoEmail: dto.ceoEmail,
+        ownerLoginId,
         modulesEnabled: modules.length,
         welcomeEmailSent: welcomeSent,
       },

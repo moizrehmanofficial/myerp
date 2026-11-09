@@ -29,7 +29,7 @@ export default function AdminSidebar({ activePath, admin, mobileOpen, onCloseMob
     try {
       await api.post('/auth/logout')
     } catch {}
-    router.push('/login')
+    router.push('/')
   }
 
   const initials = String(admin?.name || 'A')

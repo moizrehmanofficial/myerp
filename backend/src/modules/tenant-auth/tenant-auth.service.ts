@@ -1,5 +1,8 @@
 import {
   BadRequestException,
+  ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -17,6 +20,38 @@ import {
   tenantCookieOptions,
 } from '../../common/auth-cookies';
 import { TenantAuditService } from '../tenants/tenant-audit.service';
+import { domainMessage, parseLoginId } from '../tenants/tenant-login-id';
+
+// Compared against when the login ID does not exist, so a wrong ID takes as
+// long as a wrong password
+const DUMMY_HASH = bcrypt.hashSync('not-a-real-password', 10);
+
+// Wrong tries per login ID (in memory, per server process)
+const MAX_TRIES = 5;
+const WINDOW_MS = 15 * 60 * 1000;
+const failures = new Map<string, { count: number; first: number; lockedUntil: number }>();
+
+function lockedMinutes(key: string): number {
+  const f = failures.get(key);
+  if (!f || f.lockedUntil <= Date.now()) return 0;
+  return Math.max(1, Math.ceil((f.lockedUntil - Date.now()) / 60000));
+}
+
+function recordFailure(key: string) {
+  const now = Date.now();
+  let f = failures.get(key);
+  if (!f || now - f.first > WINDOW_MS) f = { count: 0, first: now, lockedUntil: 0 };
+  f.count++;
+  if (f.count >= MAX_TRIES) f.lockedUntil = now + WINDOW_MS;
+  failures.set(key, f);
+  if (failures.size > 10000) {
+    for (const [k, v] of failures) if (v.lockedUntil < now && now - v.first > WINDOW_MS) failures.delete(k);
+  }
+}
+
+function clearFailures(key: string) {
+  failures.delete(key);
+}
 
 @Injectable()
 export class TenantAuthService {
@@ -29,17 +64,19 @@ export class TenantAuthService {
     private mail: MailService,
   ) {}
 
+  // Old sign-in: company code (header) + email. Kept for a short while so
+  // nobody is locked out; the answer tells the person their new login ID.
   async login(slug: string, email: string, password: string, res: any) {
-    // Get tenant client
     const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
 
-    // Find user in tenant DB
     const users = await client.$queryRawUnsafe(
       `SELECT * FROM "users" WHERE LOWER("email") = LOWER(TRIM($1)) AND "isDeleted" = false LIMIT 1`,
       email,
     ) as any[];
 
     if (!users || users.length === 0) {
+      await bcrypt.compare(String(password || ''), DUMMY_HASH);
       await this.logFailedLogin(slug, email, 'unknown email');
       throw new UnauthorizedException('Invalid email or password');
     }
@@ -51,13 +88,73 @@ export class TenantAuthService {
       throw new UnauthorizedException('Your account has been suspended');
     }
 
-    // Verify password
     const passwordMatch = await bcrypt.compare(password, user.password);
     if (!passwordMatch) {
       await this.logFailedLogin(slug, email, 'wrong password', user);
       throw new UnauthorizedException('Invalid email or password');
     }
 
+    return this.completeLogin(slug, client, user, res);
+  }
+
+  // New sign-in for everyone: login ID "name@company" + password.
+  // - "name@company.com" is refused at once (it is not an email)
+  // - every failure gives the same message and takes about the same time,
+  //   so nobody can find out which companies or names exist
+  // - 5 wrong tries on one login ID locks it for 15 minutes
+  async signin(loginId: string, password: string, res: any) {
+    const parsed = parseLoginId(loginId);
+    if (!parsed.ok && parsed.reason === 'domain') {
+      throw new BadRequestException(domainMessage(parsed.domain));
+    }
+    const key = String(loginId || '').trim().toLowerCase().slice(0, 120);
+    const wait = lockedMinutes(key);
+    if (wait) throw new HttpException(`Too many wrong tries. Try again in ${wait} minute${wait === 1 ? '' : 's'}.`, HttpStatus.TOO_MANY_REQUESTS);
+
+    const pw = String(password || '');
+    const fail = async (slug?: string, reason?: string, user?: any) => {
+      recordFailure(key);
+      if (slug && reason) await this.logFailedLogin(slug, key, reason, user).catch(() => undefined);
+      throw new UnauthorizedException('Login ID or password is incorrect');
+    };
+
+    if (!parsed.ok) {
+      await bcrypt.compare(pw, DUMMY_HASH);
+      return fail();
+    }
+    const { username, slug } = parsed;
+
+    const company = await this.prisma.company.findUnique({ where: { slug }, select: { id: true, status: true } });
+    if (!company) {
+      await bcrypt.compare(pw, DUMMY_HASH);
+      return fail();
+    }
+
+    const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const users = (await client.$queryRawUnsafe(
+      `SELECT * FROM "users" WHERE LOWER("username") = $1 AND "isDeleted" = false LIMIT 1`,
+      username,
+    )) as any[];
+    const user = users[0];
+
+    const match = await bcrypt.compare(pw, user?.password || DUMMY_HASH);
+    if (!user) return fail(slug, 'unknown login ID');
+    if (!match) return fail(slug, 'wrong password', user);
+
+    // Right password from here on, so it is safe to say what is wrong
+    clearFailures(key);
+    if (company.status === 'SUSPENDED') throw new ForbiddenException('This company account has been suspended. Contact your administrator.');
+    if (user.status !== 'ACTIVE') {
+      await this.logFailedLogin(slug, key, `account ${String(user.status).toLowerCase()}`, user);
+      throw new ForbiddenException('Your account has been turned off. Ask your company owner.');
+    }
+
+    return this.completeLogin(slug, client, user, res);
+  }
+
+  // Tokens, cookies, modules and permissions once the password is checked
+  private async completeLogin(slug: string, client: any, user: any, res: any) {
     // Get user role
     let roleName = 'User';
     if (user.roleId) {
@@ -174,6 +271,8 @@ export class TenantAuthService {
         moduleKeys,
         permissions: userPermissions,
         logoUrl: companyLogoUrl,
+        loginId: user.username ? `${user.username}@${slug}` : null,
+        companyName: company?.name || null,
       },
     };
   }
@@ -382,18 +481,37 @@ export class TenantAuthService {
 
   // Sends a one-hour reset link. Always answers the same way, so nobody can
   // use this form to find out which emails have accounts.
-  async forgotPassword(slug: string, email: string) {
-    const generic = { success: true, message: 'If that email has an account, a reset link is on its way.' };
+  // New way: the login ID ("name@company") picks the company and the person;
+  // the link goes to the real email saved on their account.
+  async forgotPasswordByLoginId(loginId: string) {
+    const generic = { success: true, message: 'If that login ID has an email on file, a reset link is on its way.' };
+    const parsed = parseLoginId(loginId);
+    if (!parsed.ok && parsed.reason === 'domain') {
+      throw new BadRequestException(domainMessage(parsed.domain));
+    }
+    if (!parsed.ok) return generic;
+    const company = await this.prisma.company.findUnique({ where: { slug: parsed.slug }, select: { status: true } });
+    if (!company || company.status === 'SUSPENDED') return generic;
+    return this.forgotPassword(parsed.slug, '', parsed.username);
+  }
+
+  async forgotPassword(slug: string, email: string, username?: string) {
+    const generic = username
+      ? { success: true, message: 'If that login ID has an email on file, a reset link is on its way.' }
+      : { success: true, message: 'If that email has an account, a reset link is on its way.' };
     const e = String(email || '').trim().toLowerCase();
-    if (!e) return generic;
+    if (!e && !username) return generic;
     const client = await this.tenantService.getTenantClient(slug);
     await ensureTenantUpgrades(client, slug);
     const users = (await client.$queryRawUnsafe(
-      `SELECT "id", "name", "email", "status" FROM "users" WHERE LOWER("email") = $1 AND "isDeleted" = false LIMIT 1`,
-      e,
+      username
+        ? `SELECT "id", "name", "email", "status", "username" FROM "users" WHERE LOWER("username") = $1 AND "isDeleted" = false LIMIT 1`
+        : `SELECT "id", "name", "email", "status", "username" FROM "users" WHERE LOWER("email") = $1 AND "isDeleted" = false LIMIT 1`,
+      username || e,
     )) as any[];
     const user = users[0];
-    if (!user || user.status !== 'ACTIVE') return generic;
+    // No email on file: nothing to send to (the owner can reset it instead)
+    if (!user || user.status !== 'ACTIVE' || !user.email) return generic;
 
     // At most 3 links per hour per person
     const recent = (await client.$queryRawUnsafe(
@@ -418,7 +536,7 @@ export class TenantAuthService {
       'Reset your password',
       [
         `Hi ${user.name},`,
-        `Someone asked to reset the password for your ${company?.name || 'MyERP'} account. If it was you, use the button below. The link works for one hour and only once.`,
+        `Someone asked to reset the password for your ${company?.name || 'MyERP'} account${user.username ? ` (login ID ${user.username}@${slug})` : ''}. If it was you, use the button below. The link works for one hour and only once.`,
         'If you did not ask for this, you can ignore this email. Your password stays the same.',
       ],
       { label: 'Choose a new password', url },

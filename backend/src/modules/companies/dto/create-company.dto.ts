@@ -34,4 +34,13 @@ export class CreateCompanyDto {
   @IsOptional()
   @IsString()
   plan?: string;
+
+  // The owner's login ID is <ownerUsername>@<slug>. Optional: taken from
+  // the email when empty.
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z0-9](?:[a-z0-9._-]{0,38}[a-z0-9])?$/, {
+    message: 'Login name: letters, numbers, dots, dashes or underscores',
+  })
+  ownerUsername?: string;
 }

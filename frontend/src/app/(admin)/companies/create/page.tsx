@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { suggestUsername } from '@/lib/loginId'
 import Link from 'next/link'
 import toast from 'react-hot-toast'
 import { ArrowLeft, Building2, CircleCheck, Copy } from 'lucide-react'
@@ -40,7 +41,8 @@ export default function CreateCompanyPage() {
     if (Object.keys(errs).length) return toast.error('Check the highlighted fields.')
     setSaving(true)
     try {
-      const res = await api.post('/companies', { ...value, name: value.name.trim(), ceoName: value.ceoName.trim(), ceoEmail: value.ceoEmail.trim().toLowerCase() })
+      const ownerUsername = (value.ownerUsername ?? suggestUsername(value.ceoEmail)).trim().toLowerCase()
+      const res = await api.post('/companies', { ...value, ownerUsername, name: value.name.trim(), ceoName: value.ceoName.trim(), ceoEmail: value.ceoEmail.trim().toLowerCase() })
       const company = res.data.data
       if (logo && company?.id) {
         try {
@@ -53,8 +55,8 @@ export default function CreateCompanyPage() {
       }
       setCreated({
         name: value.name.trim(),
-        url: `${window.location.origin}/erp-login?company=${value.slug}`,
-        email: value.ceoEmail.trim().toLowerCase(),
+        url: `${window.location.origin}/signin`,
+        email: company?.ownerLoginId || `${ownerUsername}@${value.slug}`,
         password: value.ceoPassword,
         emailed: !!company?.welcomeEmailSent,
       })
@@ -70,7 +72,7 @@ export default function CreateCompanyPage() {
   }
 
   if (created) {
-    const all = `${created.name}\nLogin: ${created.url}\nEmail: ${created.email}\nPassword: ${created.password}`
+    const all = `${created.name}\nSign in at: ${created.url}\nLogin ID: ${created.email}\nPassword: ${created.password}`
     return (
       <AdminLayout title="Company created">
         <Card className="mx-auto max-w-xl">
@@ -84,8 +86,8 @@ export default function CreateCompanyPage() {
           </div>
           <dl className="mx-5 mb-5 divide-y divide-line rounded-[var(--radius-control)] border border-line text-sm">
             {[
-              ['Login page', created.url],
-              ['Email', created.email],
+              ['Sign in at', created.url],
+              ['Login ID', created.email],
               ['Password', created.password],
             ].map(([k, v]) => (
               <div key={k} className="flex items-center gap-3 px-4 py-3">

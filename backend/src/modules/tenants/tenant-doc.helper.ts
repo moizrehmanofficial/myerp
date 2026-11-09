@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { baseUsername, freeUsername } from './tenant-login-id';
 
 // Works with both a normal Prisma client and a transaction client (tx)
 export type Db = { $queryRawUnsafe: (query: string, ...params: any[]) => Promise<any> };
@@ -47,7 +48,7 @@ export async function ensureTenantUpgrades(client: Db, slug: string) {
 // Raise this whenever runTenantUpgrades (or an upgrade hook) gets a new step.
 // A company whose stored version matches skips all the steps below, so the
 // first request after a server restart does one quick query instead of ~50.
-const UPGRADE_VERSION = '2026-11-batch8';
+const UPGRADE_VERSION = '2026-11-batch9';
 
 async function runTenantUpgrades(client: Db, slug: string) {
   try {
@@ -76,6 +77,22 @@ async function runTenantUpgrades(client: Db, slug: string) {
 }
 
 async function runUpgradeSteps(client: Db, slug: string) {
+  // Login IDs (Batch 9): every user gets a name that is unique in the
+  // company; they sign in as name@company. Email becomes optional.
+  await client.$queryRawUnsafe(`ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "username" VARCHAR(60)`);
+  await client.$queryRawUnsafe(`ALTER TABLE "users" ALTER COLUMN "email" DROP NOT NULL`);
+  const unnamed = (await client.$queryRawUnsafe(
+    `SELECT "id", "email", "name" FROM "users"
+     WHERE "username" IS NULL AND "isDeleted" = false
+     ORDER BY "isOwner" DESC, "createdAt" ASC`,
+  )) as any[];
+  for (const u of unnamed) {
+    const name = await freeUsername(client, baseUsername(u.email || u.name), u.id);
+    await client.$queryRawUnsafe(`UPDATE "users" SET "username" = $1 WHERE "id" = $2::uuid`, name, u.id);
+  }
+  await client.$queryRawUnsafe(
+    `CREATE UNIQUE INDEX IF NOT EXISTS "users_username_unique" ON "users" (LOWER("username")) WHERE "isDeleted" = false`,
+  );
   await client.$queryRawUnsafe(
     `CREATE TABLE IF NOT EXISTS "doc_sequences" (
       "key" VARCHAR(50) PRIMARY KEY,

@@ -34,7 +34,7 @@ export default function AdminLayout({ children, title, subtitle, headerRight }: 
         setAdmin(res.data.data)
         sessionStorage.setItem('admin_user', JSON.stringify(res.data.data))
       } catch {
-        router.push('/login')
+        router.push('/')
       }
     }
     fetchAdmin()

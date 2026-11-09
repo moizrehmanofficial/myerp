@@ -2,6 +2,8 @@
 
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios'
 
+import { clearTenantSession } from './tenantSession'
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL
 
 let installed = false
@@ -18,9 +20,9 @@ function getSlugFromRequest(config?: RetryConfig): string | null {
 
 function goToLogin(slug: string | null) {
   if (typeof window === 'undefined') return
-  if (slug) sessionStorage.removeItem(`tenant_user_${slug}`)
-  if (window.location.pathname.startsWith('/erp-login')) return
-  window.location.href = slug ? `/erp-login?company=${slug}` : '/erp-login'
+  clearTenantSession(slug)
+  if (window.location.pathname.startsWith('/signin') || window.location.pathname.startsWith('/erp-login')) return
+  window.location.href = '/signin'
 }
 
 // All tenant pages use the default axios instance, so one global

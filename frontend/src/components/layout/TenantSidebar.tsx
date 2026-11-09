@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useState } from 'react'
 import { useCompanyHref } from '@/lib/useCompanyHref'
 import axios from 'axios'
+import { clearTenantSession } from '@/lib/tenantSession'
 import { Building2, ChevronDown, ChevronsLeft, ChevronsRight, KeyRound, LogOut, X } from 'lucide-react'
 import ChangePasswordModal from '@/components/auth/ChangePasswordModal'
 import { cn } from '@/utils/utils'
@@ -44,8 +45,7 @@ export default function TenantSidebar({
   })
 
   async function handleLogout() {
-    sessionStorage.removeItem(`tenant_user_${subdomain}`)
-    sessionStorage.removeItem('tenant_slug_current')
+    clearTenantSession(subdomain)
     try {
       await axios.post(
         `${process.env.NEXT_PUBLIC_API_URL}/tenant-auth/logout`,
@@ -53,7 +53,7 @@ export default function TenantSidebar({
         { withCredentials: true, headers: { 'x-tenant-slug': subdomain } },
       )
     } catch {}
-    window.location.href = `/erp-login${subdomain ? `?company=${encodeURIComponent(subdomain)}` : ''}`
+    window.location.href = '/signin'
   }
 
   const name = companyName || subdomain || 'Company'

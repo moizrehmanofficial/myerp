@@ -52,7 +52,7 @@ function ResetPassword() {
     }
   }
 
-  const loginUrl = `/erp-login?company=${encodeURIComponent(slug)}`
+  const loginUrl = '/signin'
 
   return (
     <AuthShell

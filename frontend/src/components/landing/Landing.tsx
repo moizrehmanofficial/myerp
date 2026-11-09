@@ -1,12 +1,12 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import Link from 'next/link'
 import {
-  ArrowRight, BookOpen, Boxes, Building2, ChartColumn, Factory, FileText, Layers, Receipt,
+  BookOpen, Boxes, Building2, ChartColumn, Factory, FileText, Layers, Receipt,
   RotateCcw, ShieldCheck, ShoppingCart, Users,
 } from 'lucide-react'
-import { Button, Input } from '@/components/ui'
+import { SignInForm } from '@/components/auth/SignInForm'
 import { wakeServer } from '@/lib/tenantApi'
 
 const MODULES = [
@@ -21,21 +21,10 @@ const MODULES = [
 ]
 
 export default function Landing() {
-  const [code, setCode] = useState('')
-  const [error, setError] = useState('')
-
   // Start waking the server while the visitor reads the page
   useEffect(() => {
     wakeServer()
   }, [])
-
-  function go(e: React.FormEvent) {
-    e.preventDefault()
-    const c = code.trim().toLowerCase()
-    if (!c) return setError('Enter your company code.')
-    if (!/^[a-z0-9-]+$/.test(c)) return setError('Use letters, numbers and dashes only.')
-    window.location.href = `/erp-login?company=${encodeURIComponent(c)}`
-  }
 
   return (
     <div className="min-h-screen bg-surface text-ink">
@@ -48,7 +37,7 @@ export default function Landing() {
             </span>
             <span className="text-[15px] font-semibold tracking-tight">MyERP</span>
           </span>
-          <a href="#signin" className="text-sm font-medium text-brand hover:text-brand-hover">Sign in</a>
+          <Link href="/signin" className="text-sm font-medium text-brand hover:text-brand-hover">Sign in</Link>
         </div>
       </header>
 
@@ -64,23 +53,10 @@ export default function Landing() {
               You do the work once, and every record that depends on it stays right.
             </p>
 
-            <form id="signin" onSubmit={go} className="mt-9 max-w-md rounded-xl border border-line bg-surface p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)]">
-              <label htmlFor="company-code" className="text-sm font-medium">Sign in to your company</label>
-              <p className="mt-0.5 text-[13px] text-ink-3">Your company admin can tell you the code.</p>
-              <div className="mt-3 flex gap-2">
-                <Input
-                  id="company-code"
-                  value={code}
-                  onChange={(e) => { setCode(e.target.value); setError('') }}
-                  placeholder="e.g. alfalah-traders"
-                  autoComplete="organization"
-                  aria-invalid={!!error}
-                  className="flex-1"
-                />
-                <Button type="submit" icon={<ArrowRight className="size-4" />}>Continue</Button>
-              </div>
-              {error && <p className="mt-2 text-[13px] text-bad">{error}</p>}
-            </form>
+            <div id="signin" className="mt-9 max-w-md scroll-mt-6 rounded-xl border border-line bg-surface p-5 shadow-[0_1px_2px_rgba(16,24,40,0.04)] sm:p-6">
+              <p className="mb-4 font-medium">Sign in to your company</p>
+              <SignInForm compact />
+            </div>
           </div>
 
           <FlowPreview />
@@ -103,9 +79,8 @@ export default function Landing() {
       </section>
 
       <footer className="border-t border-line">
-        <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-6 text-[13px] text-ink-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+        <div className="mx-auto max-w-6xl px-4 py-6 text-[13px] text-ink-3 sm:px-6">
           <p>© {new Date().getFullYear()} MyERP</p>
-          <Link href="/login" className="hover:text-ink-2">Platform admin sign-in</Link>
         </div>
       </footer>
     </div>

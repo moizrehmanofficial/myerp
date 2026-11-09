@@ -49,7 +49,7 @@ export default function CompanyDetailPage({ params }: Props) {
     load()
   }, [load])
 
-  const url = company && typeof window !== 'undefined' ? `${window.location.origin}/erp-login?company=${company.slug}` : ''
+  const url = typeof window !== 'undefined' ? `${window.location.origin}/signin` : '/signin'
 
   async function save(e?: React.FormEvent) {
     e?.preventDefault()
@@ -158,12 +158,22 @@ export default function CompanyDetailPage({ params }: Props) {
                   <Badge tone="brand">{PLANS.find((p) => p.key === company.plan)?.label || company.plan} plan</Badge>
                 </div>
                 <div className="rounded-[var(--radius-control)] bg-subtle px-3 py-2">
-                  <p className="text-xs text-ink-3">Company login page</p>
+                  <p className="text-xs text-ink-3">Sign-in page (same for every company)</p>
                   <div className="mt-0.5 flex items-center gap-2">
                     <p className="num min-w-0 flex-1 truncate text-[13px] font-medium text-ink" title={url}>{url}</p>
                     <button type="button" className="rounded p-1 text-ink-3 hover:bg-surface hover:text-ink" aria-label="Copy login link" onClick={() => navigator.clipboard?.writeText(url).then(() => toast.success('Link copied'))}><Copy className="size-4" /></button>
                     <a href={url} target="_blank" rel="noopener" className="rounded p-1 text-ink-3 hover:bg-surface hover:text-ink" aria-label="Open login page"><ExternalLink className="size-4" /></a>
                   </div>
+                </div>
+                <div className="rounded-[var(--radius-control)] bg-subtle px-3 py-2">
+                  <p className="text-xs text-ink-3">Owner login ID</p>
+                  <div className="mt-0.5 flex items-center gap-2">
+                    <p className="num min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{company.ownerLoginId || `name@${company.slug}`}</p>
+                    {company.ownerLoginId && (
+                      <button type="button" className="rounded p-1 text-ink-3 hover:bg-surface hover:text-ink" aria-label="Copy owner login ID" onClick={() => navigator.clipboard?.writeText(company.ownerLoginId).then(() => toast.success('Login ID copied'))}><Copy className="size-4" /></button>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-ink-3">Everyone in this company signs in as name@{company.slug}</p>
                 </div>
                 {company.status === 'ACTIVE' ? (
                   <Button variant="danger-soft" icon={<Pause className="size-4" />} loading={busy === 'suspend'} onClick={() => setStatus('suspend')}>Suspend company</Button>

@@ -1,7 +1,11 @@
 'use client'
 
+import { restoreTenantSession } from './tenantSession'
+
 export function getTenantSlug(): string {
   if (typeof window === 'undefined') return 'localhost'
+
+  restoreTenantSession()
 
   const params = new URLSearchParams(window.location.search)
   const queryCompany = params.get('company')

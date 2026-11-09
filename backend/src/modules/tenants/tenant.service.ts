@@ -1,6 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '@prisma/client';
+import { baseUsername } from './tenant-login-id';
 
 @Injectable()
 export class TenantService {
@@ -207,7 +208,8 @@ export class TenantService {
       `CREATE TABLE IF NOT EXISTS "users" (
         "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         "name" VARCHAR(255) NOT NULL,
-        "email" VARCHAR(255) UNIQUE NOT NULL,
+        "username" VARCHAR(60),
+        "email" VARCHAR(255) UNIQUE,
         "phone" VARCHAR(50),
         "password" VARCHAR(255) NOT NULL,
         "refreshToken" TEXT,
@@ -608,6 +610,7 @@ export class TenantService {
     ceoEmail: string,
     hashedPassword: string,
     moduleKeys: string[] = [],
+    ownerUsername?: string,
   ) {
     const client = await this.getTenantClient(slug);
 
@@ -631,9 +634,9 @@ export class TenantService {
 
     // ── Create Owner user ──────────────────────────────────
     await client.$queryRawUnsafe(`
-      INSERT INTO "users" ("id", "name", "email", "password", "roleId", "isOwner", "status")
-      VALUES (gen_random_uuid(), $1, $2, $3, $4::uuid, true, 'ACTIVE')
-    `, ceoName, ceoEmail, hashedPassword, roleId);
+      INSERT INTO "users" ("id", "name", "username", "email", "password", "roleId", "isOwner", "status")
+      VALUES (gen_random_uuid(), $1, $2, $3, $4, $5::uuid, true, 'ACTIVE')
+    `, ceoName, ownerUsername || baseUsername(ceoEmail), ceoEmail, hashedPassword, roleId);
 
     // ── Default settings ───────────────────────────────────
     const defaultSettings = [

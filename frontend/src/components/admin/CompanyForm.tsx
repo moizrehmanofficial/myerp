@@ -1,6 +1,8 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { LoginNameInput } from '@/components/auth/LoginNameInput'
+import { suggestUsername, usernameError } from '@/lib/loginId'
 import toast from 'react-hot-toast'
 import { Check, ImageUp, KeyRound } from 'lucide-react'
 import { Button, Card, CardHeader, Field, Input, Segmented } from '@/components/ui'
@@ -21,6 +23,7 @@ export type CompanyFormValue = {
   ceoPassword: string
   plan: string
   moduleKeys: string[]
+  ownerUsername?: string
 }
 
 export function slugify(name: string) {
@@ -40,6 +43,11 @@ export function validateCompany(v: CompanyFormValue, creating: boolean) {
   if (v.name.trim().length < 2) e.name = 'Enter the company name'
   if (creating && !/^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])$/.test(v.slug)) e.slug = '3 to 30 lowercase letters, numbers or hyphens'
   if (!v.ceoName.trim()) e.ceoName = 'Enter the owner’s name'
+  if (creating) {
+    const u = v.ownerUsername ?? suggestUsername(v.ceoEmail)
+    const err = usernameError(u)
+    if (err) e.ownerUsername = err
+  }
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.ceoEmail.trim())) e.ceoEmail = 'Enter a valid email'
   if ((creating || v.ceoPassword) && v.ceoPassword.length < 8) e.ceoPassword = 'At least 8 characters'
   if (!v.moduleKeys.length) e.moduleKeys = 'Pick at least one module'
@@ -78,10 +86,10 @@ export default function CompanyForm({
             {(id) => <Input id={id} value={value.name} onChange={(e) => set(creating ? { name: e.target.value, slug: slugify(e.target.value) } : { name: e.target.value })} autoFocus={creating} />}
           </Field>
           <Field
-            label="Login address"
+            label="Company code"
             required={creating}
             error={errors.slug}
-            hint={creating ? `${origin}/erp-login?company=${value.slug || 'your-company'}` : 'Cannot be changed after the company is created'}
+            hint={creating ? `Everyone in this company signs in as name@${value.slug || 'company-code'} at ${origin}/signin` : 'Cannot be changed after the company is created'}
           >
             {(id) => <Input id={id} value={value.slug} disabled={!creating} onChange={(e) => set({ slug: slugify(e.target.value) })} />}
           </Field>
@@ -118,7 +126,26 @@ export default function CompanyForm({
         <CardHeader title="Owner login" description={creating ? 'The owner has full access and adds the rest of the team.' : 'Changes the owner’s sign-in for this company.'} />
         <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 sm:p-5">
           <Field label="Owner name" required error={errors.ceoName}>{(id) => <Input id={id} value={value.ceoName} onChange={(e) => set({ ceoName: e.target.value })} />}</Field>
-          <Field label="Owner email" required error={errors.ceoEmail}>{(id) => <Input id={id} type="email" autoComplete="off" value={value.ceoEmail} onChange={(e) => set({ ceoEmail: e.target.value })} />}</Field>
+          <Field label="Owner email" required error={errors.ceoEmail} hint="Gets the welcome and password reset emails">{(id) => <Input id={id} type="email" autoComplete="off" value={value.ceoEmail} onChange={(e) => set({ ceoEmail: e.target.value })} />}</Field>
+          {creating && (
+            <Field
+              label="Owner login ID"
+              required
+              error={errors.ownerUsername}
+              hint={`The owner signs in with ${(value.ownerUsername ?? suggestUsername(value.ceoEmail)) || 'name'}@${value.slug || 'company-code'}`}
+              className="sm:col-span-2"
+            >
+              {(id) => (
+                <LoginNameInput
+                  id={id}
+                  value={value.ownerUsername ?? suggestUsername(value.ceoEmail)}
+                  onChange={(v) => set({ ownerUsername: v })}
+                  company={value.slug}
+                  invalid={!!errors.ownerUsername}
+                />
+              )}
+            </Field>
+          )}
           <Field label={creating ? 'Password' : 'New password'} required={creating} error={errors.ceoPassword} hint={creating ? 'At least 8 characters' : 'Leave empty to keep the current password'} className="sm:col-span-2">
             {(id) => (
               <div className="flex gap-2">

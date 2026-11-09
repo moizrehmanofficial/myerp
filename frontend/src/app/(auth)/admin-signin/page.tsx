@@ -16,7 +16,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     wakeServer()
-    // If accessed from a tenant subdomain, redirect to erp-login
+    // On a company sub-domain, send people to the company sign-in
     const host = window.location.hostname
     const parts = host.split('.')
     const subdomain = parts[0]
@@ -28,7 +28,7 @@ export default function LoginPage() {
       subdomain !== 'admin'
 
     if (isTenant) {
-      router.replace('/erp-login')
+      router.replace('/signin')
       return
     }
     setChecking(false)
@@ -65,7 +65,7 @@ export default function LoginPage() {
     >
       <LoginForm
         title="Admin sign in"
-        description="For MyERP platform administrators only. Company staff sign in from their company link."
+        description="For MyERP platform administrators only. Company staff sign in on the main sign-in page with their login ID."
         loading={loading}
         onSubmit={handleLogin}
       />

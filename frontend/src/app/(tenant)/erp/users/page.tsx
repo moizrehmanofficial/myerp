@@ -10,6 +10,9 @@ import {
 } from '@/components/ui'
 import { tenantApi, apiError } from '@/lib/tenantApi'
 import { getTenantSlug } from '@/lib/getTenantSlug'
+import { suggestUsername, usernameError } from '@/lib/loginId'
+import { LoginNameInput } from '@/components/auth/LoginNameInput'
+import { makePassword } from '@/components/admin/CompanyForm'
 import { date } from '@/lib/format'
 import { cn } from '@/utils/utils'
 
@@ -47,7 +50,7 @@ const none = (): Record<Perm, boolean> => ({ read: false, write: false, modify: 
 const all = (): Record<Perm, boolean> => ({ read: true, write: true, modify: true, delete: true, print: true, export: true, approve: true })
 const viewOnly = (): Record<Perm, boolean> => ({ ...none(), read: true, print: true, export: true })
 
-const EMPTY_USER = { name: '', email: '', phone: '', password: '', roleId: '', status: 'ACTIVE' as 'ACTIVE' | 'INACTIVE' }
+const EMPTY_USER = { name: '', username: '', email: '', phone: '', password: '', roleId: '', status: 'ACTIVE' as 'ACTIVE' | 'INACTIVE' }
 
 function initials(name: string) {
   return String(name || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase()
@@ -64,6 +67,9 @@ export default function UsersRolesPage() {
   const [editingUser, setEditingUser] = useState<any>(null)
   const [showUser, setShowUser] = useState(false)
   const [userForm, setUserForm] = useState(EMPTY_USER)
+  // Login name follows the full name until the owner edits it
+  const [nameTouched, setNameTouched] = useState(false)
+  const slug = typeof window !== 'undefined' ? getTenantSlug() : ''
   const [userErr, setUserErr] = useState('')
   const [savingUser, setSavingUser] = useState(false)
 
@@ -102,27 +108,33 @@ export default function UsersRolesPage() {
   function openUser(u?: any) {
     setEditingUser(u || null)
     setUserErr('')
-    setUserForm(u ? { name: u.name, email: u.email, phone: u.phone || '', password: '', roleId: u.roleId || '', status: u.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE' } : { ...EMPTY_USER, roleId: roles[0]?.id || '' })
+    setNameTouched(!!u)
+    setUserForm(u ? { name: u.name, username: u.username || '', email: u.email || '', phone: u.phone || '', password: '', roleId: u.roleId || '', status: u.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE' } : { ...EMPTY_USER, roleId: roles[0]?.id || '' })
     setShowUser(true)
   }
 
   async function saveUser(e?: React.FormEvent) {
     e?.preventDefault()
     if (!userForm.name.trim()) return setUserErr('Enter their name.')
-    if (!editingUser && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userForm.email.trim())) return setUserErr('Enter a valid email address.')
+    const nameErr = usernameError(userForm.username)
+    if (nameErr) return setUserErr(`Login ID: ${nameErr}`)
+    if (userForm.email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userForm.email.trim())) return setUserErr('Enter a valid email address, or leave it empty.')
     if (!userForm.roleId) return setUserErr('Choose a role. It decides what they can see and do.')
     if (!editingUser && userForm.password.length < 8) return setUserErr('The password must be at least 8 characters.')
     if (editingUser && userForm.password && userForm.password.length < 8) return setUserErr('The new password must be at least 8 characters.')
     setUserErr('')
     setSavingUser(true)
     try {
-      if (editingUser) await tenantApi.put(`/erp/users/list/${editingUser.id}`, userForm)
-      let emailed = false
-      if (!editingUser) {
-        const r = await tenantApi.post('/erp/users/list', { ...userForm, email: userForm.email.trim() })
-        emailed = !!r.data.data?.emailSent
+      const payload = { ...userForm, username: userForm.username.trim().toLowerCase(), email: userForm.email.trim() }
+      const loginId = `${payload.username}@${slug}`
+      if (editingUser) {
+        await tenantApi.put(`/erp/users/list/${editingUser.id}`, payload)
+        toast.success(userForm.password ? `Password changed. ${editingUser.name} is signed out everywhere and uses the new one.` : 'Changes saved')
+      } else {
+        const r = await tenantApi.post('/erp/users/list', payload)
+        const emailed = !!r.data.data?.emailSent
+        toast.success(`${userForm.name.trim()} can now sign in as ${loginId}${emailed ? '. We emailed them the details.' : ''}`, { duration: 8000 })
       }
-      toast.success(editingUser ? 'Changes saved' : `${userForm.name.trim()} can now sign in${emailed ? '. We emailed them the sign-in link.' : ''}`)
       setShowUser(false)
       load()
     } catch (err) {
@@ -248,7 +260,7 @@ export default function UsersRolesPage() {
                           </span>
                           <div className="min-w-0">
                             <p className="truncate font-medium">{u.name}</p>
-                            <p className="truncate text-xs text-ink-3">{u.email}</p>
+                            <p className="num truncate text-xs text-ink-2" title="Login ID">{u.loginId || u.email}</p>
                             <p className="text-xs text-ink-3 sm:hidden">{u.isOwner ? 'Owner' : u.roleName || 'No role'}</p>
                           </div>
                         </div>
@@ -309,7 +321,7 @@ export default function UsersRolesPage() {
         open={showUser}
         onClose={() => setShowUser(false)}
         title={editingUser ? `Edit ${editingUser.name}` : 'Add user'}
-        description={editingUser ? editingUser.email : 'They sign in with this email and password on your company login page.'}
+        description={editingUser ? editingUser.loginId || editingUser.email : 'They sign in with a login ID and password. Share both with them privately.'}
         footer={
           <>
             <Button variant="secondary" onClick={() => setShowUser(false)}>Cancel</Button>
@@ -318,10 +330,29 @@ export default function UsersRolesPage() {
         }
       >
         <form onSubmit={saveUser} className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <Field label="Full name" required className="sm:col-span-2">{(id) => <Input id={id} value={userForm.name} onChange={(e) => setUserForm({ ...userForm, name: e.target.value })} autoFocus />}</Field>
-          {!editingUser && (
-            <Field label="Email" required className="sm:col-span-2">{(id) => <Input id={id} type="email" autoComplete="off" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} />}</Field>
-          )}
+          <Field label="Full name" required className="sm:col-span-2">
+            {(id) => (
+              <Input
+                id={id}
+                value={userForm.name}
+                onChange={(e) => setUserForm({ ...userForm, name: e.target.value, username: nameTouched ? userForm.username : suggestUsername(e.target.value) })}
+                autoFocus
+              />
+            )}
+          </Field>
+          <Field label="Login ID" required className="sm:col-span-2" hint={`They type ${userForm.username || 'name'}@${slug} to sign in, without .com`}>
+            {(id) => (
+              <LoginNameInput
+                id={id}
+                value={userForm.username}
+                onChange={(v) => { setNameTouched(true); setUserForm({ ...userForm, username: v }) }}
+                company={slug}
+              />
+            )}
+          </Field>
+          <Field label="Email" className="sm:col-span-2" hint="Optional. Used for the welcome email and password reset links.">
+            {(id) => <Input id={id} type="email" autoComplete="off" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} />}
+          </Field>
           <Field label="Phone">{(id) => <Input id={id} type="tel" value={userForm.phone} onChange={(e) => setUserForm({ ...userForm, phone: e.target.value })} />}</Field>
           <Field label="Role" required>
             {(id) => (
@@ -331,8 +362,18 @@ export default function UsersRolesPage() {
               </Select>
             )}
           </Field>
-          <Field label={editingUser ? 'New password' : 'Password'} required={!editingUser} hint={editingUser ? 'Leave empty to keep their current password' : 'At least 8 characters. Share it with them privately.'} className="sm:col-span-2">
-            {(id) => <Input id={id} type="password" autoComplete="new-password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} />}
+          <Field
+            label={editingUser ? 'Reset password' : 'Password'}
+            required={!editingUser}
+            hint={editingUser ? 'Leave empty to keep it. A new password signs them out on every device.' : 'At least 8 characters. Share it with them privately.'}
+            className="sm:col-span-2"
+          >
+            {(id) => (
+              <div className="flex gap-2">
+                <Input id={id} type="text" autoComplete="new-password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} className="num" />
+                <Button variant="secondary" icon={<KeyRound className="size-4" />} onClick={() => setUserForm({ ...userForm, password: makePassword() })}>Generate</Button>
+              </div>
+            )}
           </Field>
           {editingUser && (
             <div className="flex flex-col gap-1.5 sm:col-span-2">

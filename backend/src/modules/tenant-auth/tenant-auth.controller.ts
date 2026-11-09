@@ -54,6 +54,14 @@ export class TenantAuthController {
     );
   }
 
+  // One sign-in for every company: "name@company" + password
+  @Post('signin')
+  @Throttle({ short: { ttl: 10000, limit: 5 }, long: { ttl: 60000, limit: 20 } })
+  @HttpCode(HttpStatus.OK)
+  async signin(@Body() body: any, @Res({ passthrough: true }) res: any) {
+    return this.tenantAuthService.signin(body?.loginId, body?.password, res);
+  }
+
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   async refresh(@Req() req: any, @Res({ passthrough: true }) res: any) {
@@ -129,6 +137,7 @@ export class TenantAuthController {
   @Throttle({ short: { ttl: 10000, limit: 3 }, long: { ttl: 600000, limit: 10 } })
   @HttpCode(HttpStatus.OK)
   async forgotPassword(@Req() req: any, @Body() body: any) {
+    if (body?.loginId) return this.tenantAuthService.forgotPasswordByLoginId(body.loginId);
     if (!req.tenant) throw new UnauthorizedException('No tenant found');
     return this.tenantAuthService.forgotPassword(req.tenant.slug, body?.email);
   }

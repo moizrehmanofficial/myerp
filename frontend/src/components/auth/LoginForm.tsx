@@ -11,12 +11,14 @@ export function LoginForm({
   loading,
   onSubmit,
   footer,
+  notice,
 }: {
   title: string
   description: string
   loading: boolean
   onSubmit: (email: string, password: string) => void
   footer?: React.ReactNode
+  notice?: React.ReactNode
 }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -38,6 +40,7 @@ export function LoginForm({
       <div className="border-t border-line pt-6 text-center">
         <h1 className="text-[17px] font-semibold text-ink">{title}</h1>
         <p className="mt-1 text-[13px] leading-relaxed text-ink-3">{description}</p>
+        {notice && <p className="mt-2 text-[13px]">{notice}</p>}
       </div>
 
       <div className="mt-6 flex flex-col gap-4">
@@ -92,7 +95,11 @@ export function LoginForm({
 
 // Friendly text for login errors (incl. rate limiting)
 export function loginErrorMessage(err: any) {
-  if (err?.response?.status === 429) return 'Too many attempts. Wait a minute, then try again.'
+  const m = err?.response?.data?.message
+  if (err?.response?.status === 429) {
+    return typeof m === 'string' && m.startsWith('Too many wrong tries') ? m : 'Too many attempts. Wait a minute, then try again.'
+  }
+  if (err?.code === 'ECONNABORTED') return 'The server took too long to answer. Please try again.'
   if (!err?.response) return 'Cannot reach the server. Check your internet connection and try again.'
   return err?.response?.data?.message || 'Sign in failed. Check your email and password.'
 }

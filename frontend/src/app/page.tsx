@@ -22,7 +22,7 @@ export default function Home() {
       subdomain !== 'admin'
 
     // A company's own address goes straight to its sign-in; the main site shows the landing page
-    if (isTenantSubdomain) router.replace('/erp-login')
+    if (isTenantSubdomain) router.replace('/signin')
     else setShow('landing')
   }, [router])
 
