@@ -35,6 +35,7 @@ export default function CompanyDetailPage({ params }: Props) {
       setModules(m.data.data || [])
       setValue({
         name: d.name, slug: d.slug, ceoName: d.ceoName, ceoEmail: d.ceoEmail, ceoPassword: '', plan: d.plan,
+        ownerUsername: d.ownerLoginId ? String(d.ownerLoginId).split('@')[0] : undefined,
         moduleKeys: (d.modules || []).map((x: any) => x.module?.key).filter(Boolean),
       })
       setLogo(null)
@@ -61,6 +62,7 @@ export default function CompanyDetailPage({ params }: Props) {
     try {
       const body: any = { name: value.name.trim(), ceoName: value.ceoName.trim(), ceoEmail: value.ceoEmail.trim().toLowerCase(), plan: value.plan, moduleKeys: value.moduleKeys }
       if (value.ceoPassword) body.ceoPassword = value.ceoPassword
+      if (value.ownerUsername) body.ownerUsername = value.ownerUsername.trim().toLowerCase()
       await api.patch(`/companies/${id}`, body)
       if (logo) {
         const fd = new FormData()

@@ -259,8 +259,18 @@ export class CompaniesService {
     }
 
     // Owner login (name / email / password) lives in the company's own users table
-    if (data.ceoName || data.ceoEmail || dto.ceoPassword) {
+    const ownerUsername = dto.ownerUsername ? dto.ownerUsername.trim().toLowerCase() : null;
+    delete data.ownerUsername;
+    if (data.ceoName || data.ceoEmail || dto.ceoPassword || ownerUsername) {
       const client = await this.tenantService.getTenantClient(company.slug);
+      await ensureTenantUpgrades(client, company.slug);
+      if (ownerUsername) {
+        const used = (await client.$queryRawUnsafe(
+          `SELECT "id" FROM "users" WHERE LOWER("username") = $1 AND "isOwner" = false AND "isDeleted" = false LIMIT 1`,
+          ownerUsername,
+        )) as any[];
+        if (used.length) throw new BadRequestException(`Another user in this company already signs in as ${ownerUsername}@${company.slug}`);
+      }
       if (data.ceoEmail) {
         const taken = (await client.$queryRawUnsafe(
           `SELECT "id" FROM "users" WHERE LOWER("email") = $1 AND "isOwner" = false AND "isDeleted" = false LIMIT 1`,
@@ -272,11 +282,14 @@ export class CompaniesService {
       await client.$queryRawUnsafe(
         `UPDATE "users"
          SET "name" = COALESCE($1, "name"), "email" = COALESCE($2, "email"),
-             "password" = COALESCE($3, "password"), "updatedAt" = NOW()
+             "password" = COALESCE($3, "password"), "username" = COALESCE($4, "username"),
+             "refreshToken" = CASE WHEN $3::text IS NULL THEN "refreshToken" ELSE NULL END,
+             "updatedAt" = NOW()
          WHERE "isOwner" = true AND "isDeleted" = false`,
         data.ceoName || null,
         data.ceoEmail || null,
         hashed,
+        ownerUsername,
       );
     }
 

@@ -43,12 +43,16 @@ export function validateCompany(v: CompanyFormValue, creating: boolean) {
   if (v.name.trim().length < 2) e.name = 'Enter the company name'
   if (creating && !/^[a-z0-9](?:[a-z0-9-]{1,28}[a-z0-9])$/.test(v.slug)) e.slug = '3 to 30 lowercase letters, numbers or hyphens'
   if (!v.ceoName.trim()) e.ceoName = 'Enter the owner’s name'
-  if (creating) {
+  if (creating || v.ownerUsername !== undefined) {
     const u = v.ownerUsername ?? suggestUsername(v.ceoEmail)
     const err = usernameError(u)
     if (err) e.ownerUsername = err
   }
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.ceoEmail.trim())) e.ceoEmail = 'Enter a valid email'
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.ceoEmail.trim())) {
+    e.ceoEmail = /@[a-z0-9-]+$/i.test(v.ceoEmail.trim())
+      ? 'This looks like a login ID. Put the owner’s real email here; the login ID is set below.'
+      : 'Enter a valid email'
+  }
   if ((creating || v.ceoPassword) && v.ceoPassword.length < 8) e.ceoPassword = 'At least 8 characters'
   if (!v.moduleKeys.length) e.moduleKeys = 'Pick at least one module'
   return e
@@ -127,7 +131,7 @@ export default function CompanyForm({
         <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 sm:p-5">
           <Field label="Owner name" required error={errors.ceoName}>{(id) => <Input id={id} value={value.ceoName} onChange={(e) => set({ ceoName: e.target.value })} />}</Field>
           <Field label="Owner email" required error={errors.ceoEmail} hint="Gets the welcome and password reset emails">{(id) => <Input id={id} type="email" autoComplete="off" value={value.ceoEmail} onChange={(e) => set({ ceoEmail: e.target.value })} />}</Field>
-          {creating && (
+          {(creating || value.ownerUsername !== undefined) && (
             <Field
               label="Owner login ID"
               required

@@ -40,4 +40,12 @@ export class UpdateCompanyDto {
   @IsOptional()
   @IsString()
   plan?: string;
+
+  // Owner's login name: the part before @ in <name>@<company code>
+  @IsOptional()
+  @IsString()
+  @Matches(/^[a-z0-9](?:[a-z0-9._-]{0,38}[a-z0-9])?$/, {
+    message: 'Login name: letters, numbers, dots, dashes or underscores',
+  })
+  ownerUsername?: string;
 }
