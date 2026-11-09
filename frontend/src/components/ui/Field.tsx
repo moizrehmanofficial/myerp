@@ -4,7 +4,7 @@ import { forwardRef, useId } from 'react'
 import { cn } from '@/utils/utils'
 
 const control =
-  'w-full rounded-[var(--radius-control)] border border-line-strong bg-surface px-3 text-sm text-ink ' +
+  'w-full rounded-[var(--radius-control)] border border-line-strong bg-surface px-3 text-base text-ink sm:text-sm ' +
   'placeholder:text-ink-3 transition-colors hover:border-ink-3 ' +
   'focus:border-brand focus:outline-none focus-visible:outline-none focus:ring-3 focus:ring-brand/15 ' +
   'disabled:cursor-not-allowed disabled:bg-subtle disabled:text-ink-3'

@@ -7,6 +7,7 @@ import { ShieldCheck, Building2, Puzzle, HardDrive } from 'lucide-react'
 import api from '@/lib/axios'
 import { AuthShell } from '@/components/auth/AuthShell'
 import { LoginForm, loginErrorMessage } from '@/components/auth/LoginForm'
+import { wakeServer } from '@/lib/tenantApi'
 
 export default function LoginPage() {
   const router = useRouter()
@@ -14,6 +15,7 @@ export default function LoginPage() {
   const [checking, setChecking] = useState(true)
 
   useEffect(() => {
+    wakeServer()
     // If accessed from a tenant subdomain, redirect to erp-login
     const host = window.location.hostname
     const parts = host.split('.')

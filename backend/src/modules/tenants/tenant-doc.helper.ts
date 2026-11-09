@@ -44,7 +44,38 @@ export async function ensureTenantUpgrades(client: Db, slug: string) {
   return upgradesInFlight.get(slug);
 }
 
+// Raise this whenever runTenantUpgrades (or an upgrade hook) gets a new step.
+// A company whose stored version matches skips all the steps below, so the
+// first request after a server restart does one quick query instead of ~50.
+const UPGRADE_VERSION = '2026-11-batch8';
+
 async function runTenantUpgrades(client: Db, slug: string) {
+  try {
+    const done = (await client.$queryRawUnsafe(
+      `SELECT "value" FROM "app_meta" WHERE "key" = 'upgrade_version'`,
+    )) as any[];
+    if (done[0]?.value === UPGRADE_VERSION) {
+      upgradedTenants.add(slug);
+      return;
+    }
+  } catch {
+    // app_meta does not exist yet: first run, carry on
+  }
+  const allOk = await runUpgradeSteps(client, slug);
+  upgradedTenants.add(slug);
+  // A failed step is tried again after the next restart
+  if (!allOk) return;
+  await client.$queryRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "app_meta" ("key" VARCHAR(50) PRIMARY KEY, "value" TEXT)`,
+  );
+  await client.$queryRawUnsafe(
+    `INSERT INTO "app_meta" ("key", "value") VALUES ('upgrade_version', $1)
+     ON CONFLICT ("key") DO UPDATE SET "value" = EXCLUDED."value"`,
+    UPGRADE_VERSION,
+  );
+}
+
+async function runUpgradeSteps(client: Db, slug: string) {
   await client.$queryRawUnsafe(
     `CREATE TABLE IF NOT EXISTS "doc_sequences" (
       "key" VARCHAR(50) PRIMARY KEY,
@@ -196,16 +227,17 @@ async function runTenantUpgrades(client: Db, slug: string) {
     }
   }
 
+  let allOk = true;
   for (const hook of upgradeHooks) {
     try {
       await hook(client, slug);
     } catch (err) {
       // Never block the ERP because of a one-time background step
       console.error(`[tenant-upgrade] ${slug}:`, err);
+      allOk = false;
     }
   }
-
-  upgradedTenants.add(slug);
+  return allOk;
 }
 
 export async function nextDocNumber(db: Db, type: DocType): Promise<string> {

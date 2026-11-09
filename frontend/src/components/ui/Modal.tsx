@@ -24,19 +24,31 @@ export function Modal({
   size?: 'sm' | 'md' | 'lg' | 'xl'
 }) {
   const panel = useRef<HTMLDivElement>(null)
+  // Pages pass a new onClose function on every render (every key press).
+  // Keep the latest one in a ref so the effect below runs only when the
+  // dialog opens or closes. Before, it ran on every key press and moved
+  // focus to the panel, which closed the phone keyboard and lost letters.
+  const closeRef = useRef(onClose)
+  useEffect(() => {
+    closeRef.current = onClose
+  })
+  // Close on a backdrop tap only if the tap also started on the backdrop
+  // (a keyboard closing on a phone can move the page under the finger)
+  const downOnBackdrop = useRef(false)
 
   useEffect(() => {
     if (!open) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && closeRef.current()
     document.addEventListener('keydown', onKey)
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    panel.current?.focus()
+    // Only take focus if nothing inside the dialog has it already
+    if (!panel.current?.contains(document.activeElement)) panel.current?.focus({ preventScroll: true })
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = prev
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 
@@ -44,7 +56,15 @@ export function Modal({
 
   return (
     <div className="fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6">
-      <div className="absolute inset-0 bg-nav/55" onClick={onClose} aria-hidden />
+      <div
+        className="absolute inset-0 bg-nav/55"
+        onPointerDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget }}
+        onClick={(e) => {
+          if (downOnBackdrop.current && e.target === e.currentTarget) onClose()
+          downOnBackdrop.current = false
+        }}
+        aria-hidden
+      />
       <div
         ref={panel}
         role="dialog"
@@ -52,7 +72,7 @@ export function Modal({
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          'relative flex max-h-[92vh] w-full flex-col rounded-t-2xl bg-surface shadow-xl outline-none sm:rounded-[var(--radius-panel)]',
+          'relative flex max-h-[92dvh] w-full flex-col rounded-t-2xl bg-surface shadow-xl outline-none sm:rounded-[var(--radius-panel)]',
           widths[size],
         )}
       >

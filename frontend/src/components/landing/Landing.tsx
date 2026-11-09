@@ -1,12 +1,13 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
   ArrowRight, BookOpen, Boxes, Building2, ChartColumn, Factory, FileText, Layers, Receipt,
   RotateCcw, ShieldCheck, ShoppingCart, Users,
 } from 'lucide-react'
 import { Button, Input } from '@/components/ui'
+import { wakeServer } from '@/lib/tenantApi'
 
 const MODULES = [
   { icon: <FileText />, title: 'Quotations and invoices', text: 'Quote a price, turn it into an invoice, record payments as they come in.' },
@@ -22,6 +23,11 @@ const MODULES = [
 export default function Landing() {
   const [code, setCode] = useState('')
   const [error, setError] = useState('')
+
+  // Start waking the server while the visitor reads the page
+  useEffect(() => {
+    wakeServer()
+  }, [])
 
   function go(e: React.FormEvent) {
     e.preventDefault()

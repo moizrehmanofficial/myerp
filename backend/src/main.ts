@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
+import compression from 'compression';
 import { AppModule } from './app.module';
 import { requestContextMiddleware } from './common/request-context';
 
@@ -18,6 +19,8 @@ async function bootstrap() {
   // Render / Vercel sit behind a proxy: use the visitor's real IP
   // (needed for rate limiting and audit logs)
   app.getHttpAdapter().getInstance().set('trust proxy', 1);
+  // Smaller responses: lists and reports load faster on mobile data
+  app.use(compression({ threshold: 1024 }));
 
   // Remember the current request (who / IP / browser) for audit logs
   app.use(requestContextMiddleware);

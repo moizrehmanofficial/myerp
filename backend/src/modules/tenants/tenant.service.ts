@@ -9,47 +9,149 @@ export class TenantService {
 
   constructor(private configService: ConfigService) {}
 
+  // Each company gets its own small pool of database connections.
+  //
+  // Before: one connection per company (connection_limit=1) and an extra
+  // "SET search_path" round trip before every request. All requests of a
+  // company waited in one line, so pages with several calls (dashboard,
+  // reports) were slow and a long transaction made everything else hang.
+  //
+  // Now: a few connections per company. Prisma sets the schema on every new
+  // connection from the ?schema= setting, so no extra query per request.
+  // When a client is created we check that every connection really is on the
+  // company's schema; if not, we fall back to the old safe behaviour.
+  private inFlight = new Map<string, Promise<PrismaClient>>();
+  private lastUsed = new Map<string, number>();
+  private legacy = new Set<string>(); // clients that need SET search_path per request
+  private sweeper?: NodeJS.Timeout;
+
   async getTenantClient(slug: string): Promise<PrismaClient> {
     // Block SQL injection / random schema names via slug
     if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
       throw new BadRequestException('Invalid company');
     }
+    this.lastUsed.set(slug, Date.now());
 
-    if (this.tenantClients.has(slug)) {
-      const cached = this.tenantClients.get(slug)!;
-      const schemaName = `tenant_${slug}`;
-      await cached.$executeRawUnsafe(
-        `SET search_path TO "${schemaName}", public`
-      );
+    const cached = this.tenantClients.get(slug);
+    if (cached) {
+      if (this.legacy.has(slug)) {
+        await cached.$executeRawUnsafe(`SET search_path TO "tenant_${slug}", public`);
+      }
       return cached;
     }
-    const client = await this.createTenantClient(slug);
-    this.tenantClients.set(slug, client);
-    return client;
+
+    // Two requests at the same moment must not create two clients
+    let pending = this.inFlight.get(slug);
+    if (!pending) {
+      pending = this.createTenantClient(slug)
+        .then((client) => {
+          this.tenantClients.set(slug, client);
+          this.startSweeper();
+          return client;
+        })
+        .finally(() => this.inFlight.delete(slug));
+      this.inFlight.set(slug, pending);
+    }
+    return pending;
+  }
+
+  private poolSize() {
+    const n = Number(this.configService.get<string>('TENANT_DB_CONNECTIONS') || 5);
+    return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), 20) : 5;
+  }
+
+  // The database address used for company data.
+  // Neon's "-pooler" address (PgBouncer, transaction mode) does not keep
+  // session settings like search_path, so a query could run against the
+  // wrong schema. Company clients therefore use the direct address.
+  // TENANT_DATABASE_URL overrides this if you want a different address.
+  private tenantBaseUrl(): string {
+    const explicit = this.configService.get<string>('TENANT_DATABASE_URL');
+    const base = explicit || this.configService.get<string>('DATABASE_URL')!;
+    try {
+      const u = new URL(base);
+      if (!explicit && u.hostname.includes('-pooler.')) {
+        u.hostname = u.hostname.replace('-pooler.', '.');
+        this.logger.log('Company data uses the direct Neon address (not -pooler)');
+      }
+      u.searchParams.delete('pgbouncer');
+      u.searchParams.delete('connection_limit');
+      u.searchParams.delete('schema');
+      return u.toString();
+    } catch {
+      return base;
+    }
   }
 
   private async createTenantClient(slug: string): Promise<PrismaClient> {
     const schemaName = `tenant_${slug}`;
-    const baseUrl = this.configService.get<string>('DATABASE_URL')!;
-    const urlWithSchema = this.addSchemaToUrl(baseUrl, schemaName);
-
-    const client = new PrismaClient({
-      datasources: { db: { url: urlWithSchema } },
-      log: ['error'],
-    });
-
+    const size = this.poolSize();
+    let client = this.newClient(this.tenantUrl(schemaName, size));
     await client.$connect();
-    await client.$executeRawUnsafe(
-      `SET search_path TO "${schemaName}", public`
-    );
-    this.logger.log(`✅ Tenant client created for: ${slug} (schema=${schemaName})`);
+
+    // Open several connections at once and check each one's schema
+    let ok = false;
+    try {
+      const rows = await Promise.all(
+        Array.from({ length: size }, () =>
+          client.$queryRawUnsafe(`SELECT current_schema() AS "s", pg_backend_pid() AS "pid" FROM pg_sleep(0.05)`),
+        ),
+      );
+      ok = rows.every((r: any) => r?.[0]?.s === schemaName);
+    } catch (err) {
+      this.logger.warn(`Schema check failed for ${slug}: ${(err as Error).message}`);
+    }
+
+    if (!ok) {
+      this.logger.warn(`Connections for ${slug} are not on ${schemaName}; using one connection with SET search_path`);
+      await client.$disconnect().catch(() => undefined);
+      client = this.newClient(this.tenantUrl(schemaName, 1));
+      await client.$connect();
+      await client.$executeRawUnsafe(`SET search_path TO "${schemaName}", public`);
+      this.legacy.add(slug);
+    } else {
+      this.legacy.delete(slug);
+    }
+
+    this.logger.log(`Tenant client ready: ${slug} (${ok ? size : 1} connection${ok && size > 1 ? 's' : ''})`);
     return client;
+  }
+
+  private newClient(url: string) {
+    return new PrismaClient({ datasources: { db: { url } }, log: ['error'] });
+  }
+
+  private tenantUrl(schemaName: string, size: number) {
+    const u = new URL(this.tenantBaseUrl());
+    u.searchParams.set('schema', schemaName);
+    u.searchParams.set('connection_limit', String(size));
+    u.searchParams.set('pool_timeout', '20');
+    return u.toString();
+  }
+
+  // Close pools of companies nobody has used for a while, so many companies
+  // do not use up the database's connection limit
+  private startSweeper() {
+    if (this.sweeper) return;
+    this.sweeper = setInterval(() => {
+      const cutoff = Date.now() - 15 * 60_000;
+      for (const [slug, client] of this.tenantClients) {
+        if ((this.lastUsed.get(slug) || 0) < cutoff) {
+          this.tenantClients.delete(slug);
+          this.legacy.delete(slug);
+          client.$disconnect().catch(() => undefined);
+          this.logger.log(`Closed idle connections for ${slug}`);
+        }
+      }
+    }, 5 * 60_000);
+    this.sweeper.unref?.();
   }
 
   async createTenantSchema(slug: string): Promise<void> {
     const schemaName = `tenant_${slug}`;
-    const baseUrl = this.configService.get<string>('DATABASE_URL')!;
-    const urlWithSchema = this.addSchemaToUrl(baseUrl, schemaName);
+    // Direct address (not -pooler): schema changes need a real session
+    const baseUrl = this.tenantBaseUrl();
+    const urlWithSchema = this.tenantUrl(schemaName, 1);
 
     const adminClient = new PrismaClient({
       datasources: { db: { url: baseUrl } },
@@ -597,11 +699,13 @@ export class TenantService {
     this.logger.log(`✅ Tenant data seeded for: ${slug} (${moduleKeys.length} modules)`);
   }
 
-  private addSchemaToUrl(url: string, schema: string): string {
-    if (url.includes('?')) {
-      return `${url}&schema=${schema}&connection_limit=1`;
-    }
-    return `${url}?schema=${schema}&connection_limit=1`;
+  // Forget a company's pool (after its schema is dropped)
+  async closeTenantClient(slug: string): Promise<void> {
+    const client = this.tenantClients.get(slug);
+    this.tenantClients.delete(slug);
+    this.legacy.delete(slug);
+    this.lastUsed.delete(slug);
+    await client?.$disconnect().catch(() => undefined);
   }
 
   async disconnectAll(): Promise<void> {

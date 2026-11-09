@@ -8,6 +8,7 @@ import { AuthShell } from '@/components/auth/AuthShell'
 import { LoginForm, loginErrorMessage } from '@/components/auth/LoginForm'
 import { Button, Field, Input } from '@/components/ui'
 import { ChartColumn, Package, Receipt } from 'lucide-react'
+import { wakeServer } from '@/lib/tenantApi'
 
 export default function TenantLoginPage() {
   return (
@@ -30,6 +31,7 @@ function TenantLoginForm() {
   const [sending, setSending] = useState(false)
 
   useEffect(() => {
+    wakeServer()
     // Company comes from ?company=, then the subdomain, then the last company used
     let sub = searchParams.get('company')
     if (!sub) {

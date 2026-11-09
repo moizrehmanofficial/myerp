@@ -11,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { ConfigService } from '@nestjs/config';
 import { MailService } from '../../common/mail/mail.service';
+import { clearTenantCache } from '../../common/middleware/tenant.middleware';
 
 @Injectable()
 export class CompaniesService {
@@ -170,6 +171,7 @@ export class CompaniesService {
         return newCompany;
       });
     } catch (err) {
+      await this.tenantService.closeTenantClient(dto.slug).catch(() => undefined);
       await this.prisma
         .$executeRawUnsafe(`DROP SCHEMA IF EXISTS "tenant_${dto.slug}" CASCADE`)
         .catch(() => {});
@@ -191,6 +193,7 @@ export class CompaniesService {
       { label: 'Open your workspace', url: `${frontendUrl}/erp-login?company=${dto.slug}` },
     );
 
+    clearTenantCache();
     return {
       success: true,
       message: 'Company ERP created successfully',
@@ -266,6 +269,7 @@ export class CompaniesService {
       return tx.company.update({ where: { id }, data });
     });
 
+    clearTenantCache();
     return {
       success: true,
       message: 'Company updated successfully',
@@ -282,6 +286,7 @@ export class CompaniesService {
       data: { status: 'SUSPENDED' },
     });
 
+    clearTenantCache();
     return {
       success: true,
       message: 'Company suspended successfully',
@@ -298,6 +303,7 @@ export class CompaniesService {
       data: { status: 'ACTIVE' },
     });
 
+    clearTenantCache();
     return {
       success: true,
       message: 'Company activated successfully',
@@ -314,6 +320,7 @@ export class CompaniesService {
       data: { status: 'DELETED' },
     });
 
+    clearTenantCache();
     return {
       success: true,
       message: 'Company deleted successfully',
@@ -374,6 +381,7 @@ export class CompaniesService {
       data: { logoUrl },
     });
 
+    clearTenantCache();
     return {
       success: true,
       message: 'Logo uploaded successfully',
