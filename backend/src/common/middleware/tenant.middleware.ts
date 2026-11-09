@@ -22,20 +22,23 @@ export class TenantMiddleware implements NestMiddleware {
   async use(req: Request, res: Response, next: NextFunction) {
     let slug: string | null = null
 
-    // Method 1: Check x-tenant-slug header (for local dev)
+    // Method 1: the x-tenant-slug header (the frontend always sends it)
     const headerSlug = req.headers['x-tenant-slug'] as string
     if (headerSlug) {
       slug = headerSlug
     } else {
-      // Method 2: Extract from hostname
-      const host = req.hostname
-      if (host === 'localhost' || host === '127.0.0.1') {
-        return next()
-      }
-      const parts = host.split('.')
-      if (parts.length >= 2) {
-        const sub = parts[0]
-        if (!['admin', 'api', 'www'].includes(sub)) {
+      // The shared sign-in finds the company from the login ID itself
+      const path = (req.originalUrl || req.url || '').split('?')[0]
+      if (/\/tenant-auth\/(signin|forgot-password)\/?$/.test(path)) return next()
+
+      // Method 2: a company sub-domain of our own domain (APP_DOMAIN), e.g.
+      // vertex.myerp.pk. Before, any host counted, so the API's own address
+      // (myerp-backend-xxxx.onrender.com) was read as a company name.
+      const host = (req.hostname || '').toLowerCase()
+      const appDomain = (process.env.APP_DOMAIN || '').trim().toLowerCase()
+      if (appDomain && host.endsWith(`.${appDomain}`)) {
+        const sub = host.slice(0, -(appDomain.length + 1))
+        if (!sub.includes('.') && !['admin', 'api', 'www', 'app'].includes(sub)) {
           slug = sub
         }
       }
