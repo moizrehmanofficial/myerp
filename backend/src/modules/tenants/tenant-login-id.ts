@@ -1,4 +1,4 @@
-// Login IDs look like "moiz@vertexsolutions": a name, then @, then the
+// Login IDs look like "name@companyname": a name, then @, then the
 // company's slug. They look like an email but are NOT one: nothing is ever
 // sent to them. Real emails (for reset links) are kept in "email".
 
@@ -20,13 +20,13 @@ export function parseLoginId(input: unknown): ParsedLoginId {
   if (at <= 0 || at === v.length - 1) return { ok: false, reason: 'format' };
   const username = v.slice(0, at);
   const slug = v.slice(at + 1);
-  // "moiz@vertexsolutions.com" → refused before anything is looked up
+  // "name@companyname.com" → refused before anything is looked up
   if (slug.includes('.')) return { ok: false, reason: 'domain', domain: slug.slice(slug.indexOf('.')) };
   if (!USERNAME_RE.test(username) || !SLUG_RE.test(slug)) return { ok: false, reason: 'format' };
   return { ok: true, username, slug };
 }
 
-// Turns "Ali.Raza+work@gmail.com" or "Ali Raza" into "ali.raza"
+// Turns "First.Last+work@gmail.com" or "First Last" into "first.last"
 export function baseUsername(source: unknown): string {
   let s = String(source ?? '').trim().toLowerCase();
   if (s.includes('@')) s = s.slice(0, s.indexOf('@'));
@@ -66,5 +66,5 @@ export async function freeUsername(db: any, base: string, exceptUserId?: string)
 
 export function domainMessage(domain?: string) {
   const d = domain && domain.length <= 20 ? domain : '.com';
-  return `Remove "${d}" from your login ID. It ends with your company name, like moiz@vertexsolutions.`;
+  return `Remove "${d}" from your login ID. It ends with your company name, like name@companyname.`;
 }

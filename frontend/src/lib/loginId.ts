@@ -1,19 +1,19 @@
-// Login IDs look like "moiz@vertexsolutions": name @ company. They are not
-// emails, so "@vertexsolutions.com" is refused before anything is sent.
+// Login IDs look like "name@companyname": name @ company. They are not
+// emails, so "@companyname.com" is refused before anything is sent.
 
-export const LOGIN_ID_HINT = 'Your login ID is your name and your company, like moiz@vertexsolutions. Do not add .com.'
+export const LOGIN_ID_HINT = 'Your login ID is your name and your company name, like name@companyname. Do not add .com.'
 
 export function loginIdError(raw: string): string | null {
   const v = raw.trim().toLowerCase()
   if (!v) return 'Enter your login ID.'
   const at = v.lastIndexOf('@')
-  if (at <= 0 || at === v.length - 1) return 'Your login ID has two parts, like moiz@vertexsolutions.'
+  if (at <= 0 || at === v.length - 1) return 'Your login ID has two parts, like name@companyname.'
   const company = v.slice(at + 1)
   if (company.includes('.')) {
-    return `Remove "${company.slice(company.indexOf('.'))}" from your login ID. It ends with your company name, like moiz@vertexsolutions.`
+    return `Remove "${company.slice(company.indexOf('.'))}" from your login ID. It ends with your company name, like name@companyname.`
   }
   if (!/^[a-z0-9._-]+$/.test(v.slice(0, at)) || !/^[a-z0-9-]+$/.test(company)) {
-    return 'A login ID has only letters, numbers, dots, dashes and underscores, like moiz@vertexsolutions.'
+    return 'A login ID has only letters, numbers, dots, dashes and underscores, like name@companyname.'
   }
   return null
 }
@@ -23,14 +23,14 @@ export function usernameError(raw: string): string | null {
   const v = raw.trim().toLowerCase()
   if (!v) return 'Enter a login name.'
   if (v.includes('@')) return 'Type only the part before @. The company part is added for you.'
-  if (/\s/.test(v)) return 'No spaces. Use a dot instead, like ali.raza.'
+  if (/\s/.test(v)) return 'No spaces. Use a dot instead, like first.last.'
   if (!/^[a-z0-9](?:[a-z0-9._-]{0,38}[a-z0-9])?$/.test(v)) {
     return 'Use letters and numbers (dots, dashes and underscores only in the middle), up to 40 characters.'
   }
   return null
 }
 
-// Suggests "ali.raza" from "Ali Raza" or "ali.raza@gmail.com"
+// Suggests "first.last" from "First Last" or "first.last@gmail.com"
 export function suggestUsername(source: string): string {
   let s = source.trim().toLowerCase()
   if (s.includes('@')) s = s.slice(0, s.indexOf('@'))

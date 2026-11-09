@@ -1,6 +1,6 @@
 'use client'
 
-// "ali.raza" + locked "@vertexsolutions": the owner types only the name part
+// "name" + locked "@companyname": the owner types only the name part
 export function LoginNameInput({
   id,
   value,
@@ -34,7 +34,7 @@ export function LoginNameInput({
         autoCorrect="off"
         spellCheck={false}
         autoComplete="off"
-        placeholder="ali.raza"
+        placeholder="name"
         aria-invalid={invalid}
         className="min-w-0 flex-1 bg-transparent px-3 text-base text-ink outline-none placeholder:text-ink-3 disabled:cursor-not-allowed disabled:text-ink-3 sm:text-sm"
       />

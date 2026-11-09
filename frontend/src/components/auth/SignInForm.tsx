@@ -81,7 +81,7 @@ export function SignInForm({ compact = false }: { compact?: boolean }) {
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
-          placeholder="moiz@vertexsolutions"
+          placeholder="name@companyname"
           value={loginId}
           onChange={(e) => onIdChange(e.target.value)}
           onBlur={() => loginId.trim() && setIdError(loginIdError(loginId) || '')}

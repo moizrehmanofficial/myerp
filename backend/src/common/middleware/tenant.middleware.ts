@@ -32,7 +32,7 @@ export class TenantMiddleware implements NestMiddleware {
       if (/\/tenant-auth\/(signin|forgot-password)\/?$/.test(path)) return next()
 
       // Method 2: a company sub-domain of our own domain (APP_DOMAIN), e.g.
-      // vertex.myerp.pk. Before, any host counted, so the API's own address
+      // companyname.myerp.pk. Before, any host counted, so the API's own address
       // (myerp-backend-xxxx.onrender.com) was read as a company name.
       const host = (req.hostname || '').toLowerCase()
       const appDomain = (process.env.APP_DOMAIN || '').trim().toLowerCase()
