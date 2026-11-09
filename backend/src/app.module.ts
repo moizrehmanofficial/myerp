@@ -1,4 +1,5 @@
 import { Module, NestModule, MiddlewareConsumer, RequestMethod } from '@nestjs/common';
+import { MailModule } from './common/mail/mail.service';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
@@ -29,6 +30,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     MulterModule.register({ limits: { fileSize: 2 * 1024 * 1024 } }),
     ScheduleModule.forRoot(),
     DatabaseModule,
+    MailModule,
     TenantModule,
     AuthModule,
     SuperAdminModule,

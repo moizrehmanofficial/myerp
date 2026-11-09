@@ -25,6 +25,9 @@ function TenantLoginForm() {
   const [companyLogo, setCompanyLogo] = useState('')
   const [ready, setReady] = useState(false)
   const [code, setCode] = useState('')
+  const [mode, setMode] = useState<'login' | 'forgot' | 'sent'>('login')
+  const [resetEmail, setResetEmail] = useState('')
+  const [sending, setSending] = useState(false)
 
   useEffect(() => {
     // Company comes from ?company=, then the subdomain, then the last company used
@@ -71,6 +74,24 @@ function TenantLoginForm() {
     setLoading(false)
   }
 
+  async function sendReset(e: React.FormEvent) {
+    e.preventDefault()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(resetEmail.trim())) return toast.error('Enter the email you sign in with.')
+    setSending(true)
+    try {
+      await axios.post(
+        `${process.env.NEXT_PUBLIC_API_URL}/tenant-auth/forgot-password`,
+        { email: resetEmail.trim() },
+        { headers: { 'x-tenant-slug': subdomain } },
+      )
+      setMode('sent')
+    } catch (err: any) {
+      toast.error(loginErrorMessage(err))
+    } finally {
+      setSending(false)
+    }
+  }
+
   function openCompany(e: React.FormEvent) {
     e.preventDefault()
     const c = code.trim().toLowerCase()
@@ -88,14 +109,43 @@ function TenantLoginForm() {
         { icon: <ChartColumn />, title: 'Books that keep themselves', text: 'Ledger, profit and loss and balance sheet, always up to date.' },
       ]}
     >
-      {!ready ? null : subdomain ? (
+      {!ready ? null : subdomain && mode === 'login' ? (
         <LoginForm
           title="Sign in"
           description="Use the email and password your company admin gave you."
           loading={loading}
           onSubmit={handleLogin}
-          footer="Forgot your password? Ask your company owner to reset it."
+          footer={
+            <button type="button" onClick={() => setMode('forgot')} className="font-medium text-brand hover:underline">
+              Forgot your password?
+            </button>
+          }
         />
+      ) : subdomain && mode === 'forgot' ? (
+        <form onSubmit={sendReset} noValidate>
+          <div className="border-t border-line pt-6 text-center">
+            <h1 className="text-[17px] font-semibold text-ink">Reset your password</h1>
+            <p className="mt-1 text-[13px] leading-relaxed text-ink-3">Enter the email you sign in with. We will send you a link to choose a new password.</p>
+          </div>
+          <div className="mt-6 flex flex-col gap-4">
+            <Field label="Email">
+              {(id) => <Input id={id} type="email" autoComplete="email" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} className="h-11" autoFocus />}
+            </Field>
+            <Button type="submit" size="lg" loading={sending} className="w-full">Send reset link</Button>
+          </div>
+          <p className="mt-6 text-center text-[13px]">
+            <button type="button" onClick={() => setMode('login')} className="font-medium text-brand hover:underline">Back to sign in</button>
+          </p>
+        </form>
+      ) : subdomain && mode === 'sent' ? (
+        <div className="border-t border-line pt-6 text-center">
+          <h1 className="text-[17px] font-semibold text-ink">Check your email</h1>
+          <p className="mt-2 text-[13px] leading-relaxed text-ink-3">
+            If <span className="font-medium text-ink-2">{resetEmail.trim()}</span> has an account here, a reset link is on its way. It works for one hour.
+            Not there? Check spam, or ask your company owner to reset your password.
+          </p>
+          <Button variant="secondary" className="mt-6 w-full" onClick={() => setMode('login')}>Back to sign in</Button>
+        </div>
       ) : (
         <form onSubmit={openCompany}>
           <div className="border-t border-line pt-6 text-center">

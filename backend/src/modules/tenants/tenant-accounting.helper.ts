@@ -318,7 +318,7 @@ export async function syncOldRecords(client: any, slug: string) {
 
     const oldInvoices = (await tx.$queryRawUnsafe(
       `SELECT i.* FROM "invoices" i
-       WHERE i."isDeleted" = false
+       WHERE i."isDeleted" = false AND COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED')
          AND NOT EXISTS (
            SELECT 1 FROM "journal_entries" je
            WHERE je."sourceType" = 'invoice' AND je."sourceId" = i."id"

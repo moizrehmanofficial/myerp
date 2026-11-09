@@ -28,7 +28,7 @@ export class TenantInvoicesService {
     private auditService: TenantAuditService,
   ) {}
 
-  async findAll(slug: string, page = 1, limit = 25, search = '') {
+  async findAll(slug: string, page = 1, limit = 25, search = '', status = '') {
     const client = await this.tenantService.getTenantClient(slug);
     const offset = (page - 1) * limit;
 
@@ -39,6 +39,12 @@ export class TenantInvoicesService {
       params.push(`%${search}%`);
       whereClause += ` AND (i."invoiceNumber" ILIKE $${params.length} OR c."name" ILIKE $${params.length})`;
     }
+    // Quick filters: draft / unpaid / overdue / cancelled
+    const live = `COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED')`;
+    if (status === 'draft') whereClause += ` AND i."status" = 'DRAFT'`;
+    if (status === 'cancelled') whereClause += ` AND i."status" = 'CANCELLED'`;
+    if (status === 'unpaid') whereClause += ` AND ${live} AND i."dueAmount" > 0`;
+    if (status === 'overdue') whereClause += ` AND ${live} AND i."dueAmount" > 0 AND i."dueDate" IS NOT NULL AND i."dueDate"::date < CURRENT_DATE`;
 
     params.push(limit);
     params.push(offset);
@@ -224,6 +230,7 @@ export class TenantInvoicesService {
     const client = await this.tenantService.getTenantClient(slug);
     await ensureTenantUpgrades(client, slug);
     const calc = this.calculate(body);
+    if (body.draft === true) return this.createDraft(slug, client, body, calc);
 
     // Everything below succeeds together or fails together
     const invoice = await client.$transaction(async (tx: any) => {
@@ -288,6 +295,127 @@ export class TenantInvoicesService {
     };
   }
 
+  // A draft is saved but does nothing yet: no stock, balance or accounts.
+  private async createDraft(slug: string, client: any, body: any, calc: any) {
+    if (calc.paidAmount > 0) throw new BadRequestException('A draft cannot have a payment. Issue the invoice first.');
+    const invoice = await client.$transaction(async (tx: any) => {
+      await this.assertCustomer(tx, body.customerId);
+      const invoiceNumber = await nextDocNumber(tx, 'invoice');
+      const rows = (await tx.$queryRawUnsafe(
+        `INSERT INTO "invoices" (
+          "id", "invoiceNumber", "customerId", "status", "paymentStatus",
+          "subtotal", "discount", "tax", "totalAmount", "paidAmount",
+          "dueAmount", "dueDate", "notes", "isPosted"
+        ) VALUES (
+          gen_random_uuid(), $1, $2::uuid, 'DRAFT', 'UNPAID',
+          $3, $4, $5, $6, 0, $6, $7::timestamp, $8, false
+        ) RETURNING *`,
+        invoiceNumber,
+        body.customerId,
+        calc.subtotal,
+        calc.discount,
+        calc.tax,
+        calc.totalAmount,
+        body.dueDate || null,
+        body.notes || null,
+      )) as any[];
+      await this.insertItems(tx, rows[0].id, calc.items);
+      if (body.quotationId) await this.linkQuotation(tx, body.quotationId, rows[0].id);
+      return rows[0];
+    }, TX_OPTIONS);
+
+    await this.auditService.log(slug, { action: 'CREATED', module: 'invoices', recordId: invoice.id, description: `Draft invoice ${invoice.invoiceNumber} saved` });
+    return { success: true, message: 'Draft saved', data: invoice };
+  }
+
+  private async linkQuotation(tx: any, quotationId: string, invoiceId: string) {
+    await tx.$queryRawUnsafe(
+      `UPDATE "quotations" SET "status" = 'CONVERTED', "invoiceId" = $1::uuid, "updatedAt" = NOW()
+       WHERE "id" = $2::uuid AND "isDeleted" = false`,
+      invoiceId,
+      quotationId,
+    );
+  }
+
+  // Draft → real invoice: stock goes out, customer owes it, accounts updated
+  async issue(slug: string, id: string) {
+    const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const inv = await client.$transaction(async (tx: any) => {
+      const rows = (await tx.$queryRawUnsafe(
+        `SELECT * FROM "invoices" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1 FOR UPDATE`,
+        id,
+      )) as any[];
+      if (!rows.length) throw new NotFoundException('Invoice not found');
+      const draft = rows[0];
+      if (draft.status !== 'DRAFT') throw new BadRequestException('Only a draft can be issued');
+      const items = (await tx.$queryRawUnsafe(
+        `SELECT "productId", "quantity" FROM "invoice_items" WHERE "invoiceId" = $1::uuid`,
+        id,
+      )) as any[];
+      for (const [productId, qty] of groupQtyByProduct(items)) {
+        await stockOut(tx, productId, qty, draft.invoiceNumber, 'Sale invoice');
+      }
+      const updated = (await tx.$queryRawUnsafe(
+        `UPDATE "invoices" SET "status" = 'CONFIRMED', "isPosted" = true, "createdAt" = NOW(), "updatedAt" = NOW()
+         WHERE "id" = $1::uuid RETURNING *`,
+        id,
+      )) as any[];
+      await this.changeCustomerBalance(tx, draft.customerId, Number(draft.dueAmount));
+      await postInvoiceSale(tx, updated[0], items);
+      return updated[0];
+    }, TX_OPTIONS);
+    await this.auditService.log(slug, { action: 'UPDATED', module: 'invoices', recordId: id, description: `Invoice ${inv.invoiceNumber} issued` });
+    return { success: true, message: 'Invoice issued', data: inv };
+  }
+
+  // Cancel keeps the invoice on file (marked Cancelled) but undoes it:
+  // stock back, sale reversed in the accounts. Money already received stays
+  // as the customer's credit, same as deleting.
+  async cancel(slug: string, id: string, body: any) {
+    const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const inv = await client.$transaction(async (tx: any) => {
+      const rows = (await tx.$queryRawUnsafe(
+        `SELECT * FROM "invoices" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1 FOR UPDATE`,
+        id,
+      )) as any[];
+      if (!rows.length) throw new NotFoundException('Invoice not found');
+      const old = rows[0];
+      if (old.status === 'CANCELLED') throw new BadRequestException('This invoice is already cancelled');
+      await this.undo(tx, old, `Invoice ${old.invoiceNumber} cancelled`);
+      const reason = String(body?.reason || '').trim();
+      const updated = (await tx.$queryRawUnsafe(
+        `UPDATE "invoices"
+         SET "status" = 'CANCELLED', "dueAmount" = 0, "isPosted" = false, "updatedAt" = NOW(),
+             "notes" = CASE WHEN $2 = '' THEN "notes" ELSE CONCAT_WS(E'\n', "notes", 'Cancelled: ' || $2) END
+         WHERE "id" = $1::uuid RETURNING *`,
+        id,
+        reason,
+      )) as any[];
+      return updated[0];
+    }, TX_OPTIONS);
+    await this.auditService.log(slug, { action: 'UPDATED', module: 'invoices', recordId: id, description: `Invoice ${inv.invoiceNumber} cancelled` });
+    return { success: true, message: 'Invoice cancelled', data: inv };
+  }
+
+  // Stock back + sale reversed (used by cancel and delete)
+  private async undo(tx: any, inv: any, why: string) {
+    if (inv.isPosted) {
+      const items = (await tx.$queryRawUnsafe(
+        `SELECT "productId", "quantity" FROM "invoice_items" WHERE "invoiceId" = $1::uuid`,
+        inv.id,
+      )) as any[];
+      for (const [productId, qty] of groupQtyByProduct(items)) {
+        await stockIn(tx, productId, qty, inv.invoiceNumber, why);
+      }
+    }
+    if (isAccounted(inv)) {
+      await this.changeCustomerBalance(tx, inv.customerId, -Number(inv.totalAmount));
+      await reverseSource(tx, 'invoice', inv.id, why, inv.invoiceNumber);
+    }
+  }
+
   async updatePayment(slug: string, id: string, body: any) {
     if (!id || id === 'undefined') {
       throw new NotFoundException('Invoice not found');
@@ -308,6 +436,8 @@ export class TenantInvoicesService {
       if (!invoices || invoices.length === 0) throw new NotFoundException('Invoice not found');
 
       const invoice = invoices[0];
+      if (invoice.status === 'DRAFT') throw new BadRequestException('Issue this draft before recording a payment');
+      if (invoice.status === 'CANCELLED') throw new BadRequestException('This invoice is cancelled');
       const due = Number(invoice.dueAmount);
       if (due <= 0) throw new BadRequestException('This invoice is already fully paid');
       if (amount > due + 1) {
@@ -369,23 +499,11 @@ export class TenantInvoicesService {
       if (!invoices || invoices.length === 0) throw new NotFoundException('Invoice not found');
       const inv = invoices[0];
 
-      if (inv.isPosted) {
-        // Put the stock back
-        const items = (await tx.$queryRawUnsafe(
-          `SELECT "productId", "quantity" FROM "invoice_items" WHERE "invoiceId" = $1::uuid`,
-          id,
-        )) as any[];
-        for (const [productId, qty] of groupQtyByProduct(items)) {
-          await stockIn(tx, productId, qty, inv.invoiceNumber, 'Invoice deleted');
-        }
-      }
-      if (isAccounted(inv)) {
-        // Cancel the SALE only. Money already received stays with us and
-        // becomes the customer's credit (negative balance), which can be
-        // refunded from Finance → Payments (select the customer).
-        await this.changeCustomerBalance(tx, inv.customerId, -Number(inv.totalAmount));
-        await reverseSource(tx, 'invoice', inv.id, `Invoice ${inv.invoiceNumber} deleted`, inv.invoiceNumber);
-      }
+      // Cancel the SALE only. Money already received stays with us and
+      // becomes the customer's credit (negative balance), which can be
+      // refunded from Finance → Payments (select the customer).
+      // A cancelled invoice was already undone, so nothing more to do.
+      if (inv.status !== 'CANCELLED') await this.undo(tx, inv, `Invoice ${inv.invoiceNumber} deleted`);
 
       await tx.$queryRawUnsafe(
         `UPDATE "invoices" SET "isDeleted" = true, "deletedAt" = NOW() WHERE "id" = $1::uuid`,
@@ -422,9 +540,26 @@ export class TenantInvoicesService {
       )) as any[];
       if (!invoices || invoices.length === 0) throw new NotFoundException('Invoice not found');
       const old = invoices[0];
+      if (old.status === 'CANCELLED') throw new BadRequestException('A cancelled invoice cannot be edited');
 
       const calc = this.calculate(body, Number(old.paidAmount));
       await this.assertCustomer(tx, body.customerId);
+
+      // A draft is just saved again: nothing to undo or post
+      if (old.status === 'DRAFT') {
+        if (calc.paidAmount > 0) throw new BadRequestException('A draft cannot have a payment. Issue the invoice first.');
+        const r = (await tx.$queryRawUnsafe(
+          `UPDATE "invoices"
+           SET "customerId" = $1::uuid, "subtotal" = $2, "discount" = $3, "tax" = $4, "totalAmount" = $5,
+               "paidAmount" = 0, "dueAmount" = $5, "paymentStatus" = 'UNPAID', "dueDate" = $6::timestamp,
+               "notes" = $7, "updatedAt" = NOW()
+           WHERE "id" = $8::uuid RETURNING *`,
+          body.customerId, calc.subtotal, calc.discount, calc.tax, calc.totalAmount, body.dueDate || null, body.notes || null, id,
+        )) as any[];
+        await tx.$queryRawUnsafe(`DELETE FROM "invoice_items" WHERE "invoiceId" = $1::uuid`, id);
+        await this.insertItems(tx, id, calc.items);
+        return r[0];
+      }
 
       if (old.isPosted) {
         // 1. Undo the old invoice: stock back

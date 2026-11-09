@@ -16,6 +16,7 @@ const DOCS = {
   purchaseReturn: { table: 'purchase_returns',     column: 'returnNumber',  setting: null,              prefix: 'PR-',  pad: 5 },
   saleReturn:     { table: 'sale_returns',         column: 'returnNumber',  setting: null,              prefix: 'SR-',  pad: 5 },
   manufacturing:  { table: 'manufacturing_orders', column: 'orderNumber',   setting: null,              prefix: 'MO-',  pad: 5 },
+  quotation:      { table: 'quotations',           column: 'quotationNumber', setting: 'quotation_prefix', prefix: 'QT-', pad: 5 },
 } as const;
 
 export type DocType = keyof typeof DOCS;
@@ -60,6 +61,47 @@ async function runTenantUpgrades(client: Db, slug: string) {
   // Payroll: when and how a salary was paid (Part 3)
   await client.$queryRawUnsafe(`ALTER TABLE "payroll" ADD COLUMN IF NOT EXISTS "paidAt" TIMESTAMP`);
   await client.$queryRawUnsafe(`ALTER TABLE "payroll" ADD COLUMN IF NOT EXISTS "paidMethod" VARCHAR(20)`);
+  // Quotations (Batch 7): a price offer that can become an invoice
+  await client.$queryRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "quotations" (
+      "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      "quotationNumber" VARCHAR(100) UNIQUE NOT NULL,
+      "customerId" UUID NOT NULL REFERENCES "customers"("id"),
+      "status" VARCHAR(20) DEFAULT 'DRAFT',
+      "subtotal" DECIMAL(15,2) DEFAULT 0,
+      "discount" DECIMAL(15,2) DEFAULT 0,
+      "tax" DECIMAL(15,2) DEFAULT 0,
+      "totalAmount" DECIMAL(15,2) DEFAULT 0,
+      "validUntil" TIMESTAMP,
+      "notes" TEXT,
+      "invoiceId" UUID,
+      "isDeleted" BOOLEAN DEFAULT false,
+      "createdAt" TIMESTAMP DEFAULT NOW(),
+      "updatedAt" TIMESTAMP DEFAULT NOW()
+    )`,
+  );
+  await client.$queryRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "quotation_items" (
+      "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      "quotationId" UUID NOT NULL REFERENCES "quotations"("id") ON DELETE CASCADE,
+      "productId" UUID NOT NULL REFERENCES "products"("id"),
+      "quantity" DECIMAL(15,2) NOT NULL,
+      "unitPrice" DECIMAL(15,2) NOT NULL,
+      "discount" DECIMAL(15,2) DEFAULT 0,
+      "totalPrice" DECIMAL(15,2) NOT NULL
+    )`,
+  );
+  // Forgot-password links (Batch 7). Only a hash of the token is stored.
+  await client.$queryRawUnsafe(
+    `CREATE TABLE IF NOT EXISTS "password_resets" (
+      "id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      "userId" UUID NOT NULL,
+      "tokenHash" VARCHAR(64) UNIQUE NOT NULL,
+      "expiresAt" TIMESTAMP NOT NULL,
+      "usedAt" TIMESTAMP,
+      "createdAt" TIMESTAMP DEFAULT NOW()
+    )`,
+  );
   // Manufacturing: cost of the raw materials used (Batch 6)
   await client.$queryRawUnsafe(`ALTER TABLE "manufacturing_orders" ADD COLUMN IF NOT EXISTS "materialCost" DECIMAL(15,2) DEFAULT 0`);
 

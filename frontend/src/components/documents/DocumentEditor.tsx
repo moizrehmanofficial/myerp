@@ -12,7 +12,7 @@ import { money, number } from '@/lib/format'
 import { useCompanyHref } from '@/lib/useCompanyHref'
 import { cn } from '@/utils/utils'
 
-export type DocKind = 'invoice' | 'sales' | 'purchase'
+export type DocKind = 'invoice' | 'sales' | 'purchase' | 'quotation'
 
 interface Line {
   productId: string
@@ -42,6 +42,8 @@ const CONFIG = {
     saveUrl: '/erp/invoices',
     listUrl: '/erp/invoices',
     saveLabel: 'Create invoice',
+    drafts: true,
+    validity: false,
   },
   sales: {
     module: 'sales',
@@ -65,6 +67,8 @@ const CONFIG = {
     saveUrl: '/erp/sales/orders',
     listUrl: '/erp/sales/orders',
     saveLabel: 'Create sales order',
+    drafts: false,
+    validity: false,
   },
   purchase: {
     module: 'purchase',
@@ -87,6 +91,28 @@ const CONFIG = {
     saveUrl: '/erp/purchase/orders',
     listUrl: '/erp/purchase/orders',
     saveLabel: 'Create purchase order',
+    drafts: false,
+    validity: false,
+  },
+  quotation: {
+    module: 'sales',
+    titleNew: 'New quotation',
+    titleEdit: 'Edit quotation',
+    subtitle: 'A price offer for a customer. Nothing changes in stock or accounts until it becomes an invoice.',
+    party: 'Customer',
+    partiesUrl: '/erp/quotations/customers',
+    productsUrl: '/erp/quotations/products',
+    price: 'salePrice' as const,
+    lineDiscount: true,
+    totals: true,
+    payment: false,
+    checkStock: false,
+    statuses: null as null | { value: string; label: string; hint: string }[],
+    saveUrl: '/erp/quotations',
+    listUrl: '/erp/quotations',
+    saveLabel: 'Save quotation',
+    drafts: false,
+    validity: true,
   },
 }
 
@@ -115,6 +141,8 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
   const [method, setMethod] = useState('CASH')
   const [status, setStatus] = useState(c.statuses?.[0].value || '')
   const [dueDate, setDueDate] = useState('')
+  const [validUntil, setValidUntil] = useState('')
+  const [docStatus, setDocStatus] = useState('') // DRAFT when editing a draft invoice
   const [notes, setNotes] = useState('')
   const [originalQty, setOriginalQty] = useState<Record<string, number>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
@@ -148,6 +176,8 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
           setTaxType('fixed')
           setPaid(String(Number(doc.paidAmount || 0)))
           setDueDate(doc.dueDate ? String(doc.dueDate).split('T')[0] : '')
+          setValidUntil(doc.validUntil ? String(doc.validUntil).split('T')[0] : '')
+          setDocStatus(doc.status || '')
           setNotes(doc.notes || '')
           const items = (doc.items || []).map((it: any) => ({
             productId: it.productId,
@@ -203,7 +233,10 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
   const available = (productId: string) => Number(byId.get(productId)?.stock || 0) + (originalQty[productId] || 0)
   const short = c.checkStock ? Object.keys(needed).filter((id) => needed[id] > available(id)) : []
 
-  async function save() {
+  const editingDraft = kind === 'invoice' && docStatus === 'DRAFT'
+
+  // asDraft: save an invoice without moving stock or money (it can be issued later)
+  async function save(asDraft = false) {
     const errs: Record<string, string> = {}
     if (!partyId) errs.party = `Choose a ${c.party.toLowerCase()}.`
     const valid = lines.filter((l) => l.productId)
@@ -213,7 +246,8 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
       errs.lines = 'A line discount is larger than the line amount.'
     if (discountValue > subtotal) errs.discount = 'Discount is larger than the subtotal.'
     if (c.payment && paidValue > total + 1) errs.paid = 'Amount received is more than the total.'
-    if (short.length) errs.lines = `Not enough stock for ${short.map((id) => byId.get(id)?.name).join(', ')}.`
+    if (asDraft && paidValue > 0) errs.paid = 'A draft cannot have a payment. Set it to 0, or create the invoice.'
+    if (!asDraft && short.length) errs.lines = `Not enough stock for ${short.map((id) => byId.get(id)?.name).join(', ')}.`
     setErrors(errs)
     if (Object.keys(errs).length) {
       toast.error(Object.values(errs)[0])
@@ -237,21 +271,31 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
     }
     if (c.statuses) payload.status = status
     if (c.payment) {
-      payload.paidAmount = Math.min(paidValue, total).toFixed(2)
+      payload.paidAmount = asDraft || editingDraft ? '0' : Math.min(paidValue, total).toFixed(2)
       payload.paymentMethod = method
       payload.dueDate = dueDate || null
     }
+    if (c.validity) payload.validUntil = validUntil || null
+    if (asDraft && !editId) payload.draft = true
 
     setSaving(true)
     try {
       if (editId) {
         await tenantApi.put(`${c.saveUrl}/${editId}`, payload)
-        toast.success('Changes saved')
+        // "Save and issue" on a draft: stock and accounts move now
+        if (editingDraft && !asDraft) await tenantApi.patch(`${c.saveUrl}/${editId}/issue`)
+        toast.success(editingDraft && !asDraft ? 'Invoice issued' : editingDraft ? 'Draft saved' : 'Changes saved')
         router.push(href(`${c.listUrl}/${editId}`))
       } else {
         const res = await tenantApi.post(c.saveUrl, payload)
         const id = res.data?.data?.id
-        toast.success(kind === 'invoice' ? 'Invoice created' : kind === 'sales' ? 'Sales order created' : status === 'RECEIVED' ? 'Purchase saved and stock added' : 'Purchase order created')
+        toast.success(
+          asDraft ? 'Draft saved. Stock and accounts change when you issue it.'
+            : kind === 'invoice' ? 'Invoice created'
+            : kind === 'quotation' ? 'Quotation saved'
+            : kind === 'sales' ? 'Sales order created'
+            : status === 'RECEIVED' ? 'Purchase saved and stock added' : 'Purchase order created',
+        )
         router.push(href(id ? `${c.listUrl}/${id}` : c.listUrl))
       }
     } catch (err) {
@@ -294,8 +338,12 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
                     </Select>
                   )}
                 </Field>
-                {c.payment ? (
-                  <Field label="Payment due by" hint="Optional">
+                {c.validity ? (
+                  <Field label="Valid until" hint="Optional. After this date the offer shows as expired.">
+                    {(id) => <Input id={id} type="date" value={validUntil} onChange={(e) => setValidUntil(e.target.value)} />}
+                  </Field>
+                ) : c.payment ? (
+                  <Field label="Payment due by" hint="Optional. After this date an unpaid invoice shows as overdue.">
                     {(id) => <Input id={id} type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />}
                   </Field>
                 ) : c.statuses ? (
@@ -443,7 +491,7 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
               </CardBody>
             </Card>
 
-            {c.payment && (
+            {c.payment && !editingDraft && (
               <Card>
                 <CardHeader title="Payment received now" description="Leave 0 if the customer will pay later." />
                 <CardBody className="flex flex-col gap-4">
@@ -483,9 +531,26 @@ export default function DocumentEditor({ kind, editId }: { kind: DocKind; editId
               </p>
             )}
 
-            <Button size="lg" onClick={save} loading={saving} className="w-full">
-              {editId ? 'Save changes' : c.saveLabel}
-            </Button>
+            {kind === 'quotation' && (
+              <p className="flex gap-2 px-1 text-[13px] text-ink-3">
+                <Info className="mt-0.5 size-4 shrink-0" />
+                When the customer agrees, open the quotation and turn it into an invoice.
+              </p>
+            )}
+
+            <div className="flex flex-col gap-2">
+              <Button size="lg" onClick={() => save(false)} loading={saving} className="w-full">
+                {editingDraft ? 'Save and issue invoice' : editId ? 'Save changes' : c.saveLabel}
+              </Button>
+              {c.drafts && (!editId || editingDraft) && (
+                <Button size="lg" variant="secondary" onClick={() => save(true)} disabled={saving} className="w-full">
+                  {editingDraft ? 'Save draft' : 'Save as draft'}
+                </Button>
+              )}
+              {c.drafts && (!editId || editingDraft) && (
+                <p className="px-1 text-center text-xs text-ink-3">A draft does not change stock, balances or accounts until you issue it.</p>
+              )}
+            </div>
           </div>
         </div>
       )}

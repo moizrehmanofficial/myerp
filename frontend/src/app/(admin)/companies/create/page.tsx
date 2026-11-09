@@ -19,7 +19,7 @@ export default function CreateCompanyPage() {
   const [errors, setErrors] = useState<Partial<Record<keyof CompanyFormValue, string>>>({})
   const [logo, setLogo] = useState<File | null>(null)
   const [saving, setSaving] = useState(false)
-  const [created, setCreated] = useState<{ name: string; url: string; email: string; password: string } | null>(null)
+  const [created, setCreated] = useState<{ name: string; url: string; email: string; password: string; emailed: boolean } | null>(null)
 
   useEffect(() => {
     api
@@ -56,6 +56,7 @@ export default function CreateCompanyPage() {
         url: `${window.location.origin}/erp-login?company=${value.slug}`,
         email: value.ceoEmail.trim().toLowerCase(),
         password: value.ceoPassword,
+        emailed: !!company?.welcomeEmailSent,
       })
     } catch (err) {
       toast.error(apiError(err, 'Could not create the company.'))
@@ -76,7 +77,10 @@ export default function CreateCompanyPage() {
           <div className="flex flex-col items-center px-6 pt-8 pb-4 text-center">
             <span className="flex size-12 items-center justify-center rounded-full bg-good-soft text-good"><CircleCheck className="size-6" aria-hidden /></span>
             <h2 className="mt-3 text-lg font-semibold text-ink">{created.name} is ready</h2>
-            <p className="mt-1 text-sm text-ink-3">Send these sign-in details to the owner. The password is not shown again.</p>
+            <p className="mt-1 text-sm text-ink-3">
+              {created.emailed ? 'A welcome email with the sign-in link went to the owner. ' : ''}
+              Share the password with the owner privately. It is not shown again.
+            </p>
           </div>
           <dl className="mx-5 mb-5 divide-y divide-line rounded-[var(--radius-control)] border border-line text-sm">
             {[

@@ -13,7 +13,25 @@ export class TenantHRService {
 
   // ── EMPLOYEES ──────────────────────────────────────────
 
-  async getEmployees(slug: string, page = 1, limit = 25, search = '') {
+  // Departments are the names used on employee records
+  async getDepartments(slug: string) {
+    const client = await this.tenantService.getTenantClient(slug);
+    const rows = (await client.$queryRawUnsafe(
+      `SELECT MIN(NULLIF(TRIM("department"), '')) AS "name",
+              COUNT(*) FILTER (WHERE "status" = 'ACTIVE') AS "active",
+              COUNT(*) AS "total",
+              COALESCE(SUM("salary") FILTER (WHERE "status" = 'ACTIVE'), 0) AS "monthlySalary"
+       FROM "employees" WHERE "isDeleted" = false
+       GROUP BY LOWER(NULLIF(TRIM("department"), ''))
+       ORDER BY 1 NULLS LAST`,
+    )) as any[];
+    return {
+      success: true,
+      data: rows.map((r: any) => ({ name: r.name, active: Number(r.active), total: Number(r.total), monthlySalary: Number(r.monthlySalary) })),
+    };
+  }
+
+  async getEmployees(slug: string, page = 1, limit = 25, search = '', department = '') {
     const client = await this.tenantService.getTenantClient(slug);
     const offset = (page - 1) * limit;
 
@@ -23,6 +41,12 @@ export class TenantHRService {
     if (search) {
       params.push(`%${search}%`);
       whereClause += ` AND ("name" ILIKE $${params.length} OR "employeeCode" ILIKE $${params.length} OR "department" ILIKE $${params.length})`;
+    }
+    if (department === '-') {
+      whereClause += ` AND NULLIF(TRIM("department"), '') IS NULL`;
+    } else if (department) {
+      params.push(department);
+      whereClause += ` AND LOWER(TRIM("department")) = LOWER($${params.length})`;
     }
 
     params.push(limit);

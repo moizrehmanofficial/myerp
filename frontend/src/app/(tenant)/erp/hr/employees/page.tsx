@@ -8,7 +8,7 @@ import ExportButton from '@/components/common/ExportButton'
 import Pagination from '@/components/common/Pagination'
 import {
   Button, Card, Field, Input, Modal, Segmented, Table, TableWrap, Th, Td, Tr,
-  Spinner, EmptyState, SearchInput, ListToolbar, IconAction, StatusBadge, useConfirm,
+  Spinner, EmptyState, SearchInput, ListToolbar, IconAction, StatusBadge, FilterChips, useConfirm,
 } from '@/components/ui'
 import { usePermission } from '@/hooks/usePermission'
 import { tenantApi, apiError } from '@/lib/tenantApi'
@@ -31,6 +31,8 @@ export default function EmployeesPage() {
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(25)
+  const [dept, setDept] = useState('')
+  const [depts, setDepts] = useState<{ name: string | null; active: number; total: number; monthlySalary: number }[]>([])
   const [editing, setEditing] = useState<any>(null)
   const [showForm, setShowForm] = useState(false)
   const [form, setForm] = useState(EMPTY)
@@ -38,12 +40,16 @@ export default function EmployeesPage() {
   const [saving, setSaving] = useState(false)
   const [confirm, confirmDialog] = useConfirm()
 
-  const load = useCallback(async (q: string, p: number, l: number) => {
+  const load = useCallback(async (q: string, p: number, l: number, dp = '') => {
     setLoading(true)
     try {
-      const res = await tenantApi.get(`/erp/hr/employees?search=${encodeURIComponent(q)}&page=${p}&limit=${l}`)
+      const [res, dres] = await Promise.all([
+        tenantApi.get(`/erp/hr/employees?search=${encodeURIComponent(q)}&page=${p}&limit=${l}${dp ? `&department=${encodeURIComponent(dp)}` : ''}`),
+        tenantApi.get('/erp/hr/departments').catch(() => null),
+      ])
       setRows(res.data.data || [])
       setMeta(res.data.meta)
+      if (dres) setDepts(dres.data.data || [])
     } catch (err) {
       toast.error(apiError(err, 'Could not load employees.'))
     } finally {
@@ -52,8 +58,15 @@ export default function EmployeesPage() {
   }, [])
 
   useEffect(() => {
-    load(search, page, limit)
-  }, [load, search, page, limit])
+    load(search, page, limit, dept)
+  }, [load, search, page, limit, dept])
+
+  const deptNames = Array.from(new Set([...depts.map((d) => d.name).filter(Boolean) as string[], ...DEPARTMENTS]))
+  const deptChips = [
+    { key: '', label: 'All', count: depts.reduce((s, d) => s + d.total, 0) },
+    ...depts.map((d) => ({ key: d.name || '-', label: d.name || 'No department', count: d.total })),
+  ]
+  const current = depts.find((d) => (d.name || '-') === dept)
 
   function openForm(emp?: any) {
     setEditing(emp || null)
@@ -81,7 +94,7 @@ export default function EmployeesPage() {
       else await tenantApi.post('/erp/hr/employees', body)
       toast.success(editing ? 'Changes saved' : `${body.name} added`)
       setShowForm(false)
-      load(search, page, limit)
+      load(search, page, limit, dept)
     } catch (err) {
       toast.error(apiError(err, 'Could not save the employee.'))
     } finally {
@@ -100,7 +113,7 @@ export default function EmployeesPage() {
     try {
       await tenantApi.delete(`/erp/hr/employees/${emp.id}`)
       toast.success(`${emp.name} deleted`)
-      load(search, page, limit)
+      load(search, page, limit, dept)
     } catch (err) {
       toast.error(apiError(err, 'Could not delete the employee.'))
     }
@@ -138,7 +151,13 @@ export default function EmployeesPage() {
       <Card>
         <ListToolbar>
           <SearchInput placeholder="Search by name, code or department" onSearch={(q) => { setPage(1); setSearch(q) }} />
+          {depts.length > 1 && <FilterChips options={deptChips} value={dept} onChange={(k) => { setPage(1); setDept(k) }} />}
         </ListToolbar>
+        {current && (
+          <p className="border-b border-line px-4 py-2.5 text-sm text-ink-2 sm:px-5">
+            {current.name || 'No department'}: {current.active} active of {current.total}, monthly salaries {money(current.monthlySalary)}
+          </p>
+        )}
         {loading ? (
           <Spinner label="Loading employees" />
         ) : rows.length === 0 ? (
@@ -237,7 +256,7 @@ export default function EmployeesPage() {
             {(id) => (
               <>
                 <Input id={id} list="dept-list" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />
-                <datalist id="dept-list">{DEPARTMENTS.map((d) => <option key={d} value={d} />)}</datalist>
+                <datalist id="dept-list">{deptNames.map((d) => <option key={d} value={d} />)}</datalist>
               </>
             )}
           </Field>

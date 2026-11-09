@@ -17,7 +17,7 @@ const DATE_FORMATS = ['DD/MM/YYYY', 'MM/DD/YYYY', 'YYYY-MM-DD']
 const DEFAULTS = {
   company_name: '', company_email: '', company_phone: '', company_address: '',
   company_currency: 'PKR', company_timezone: 'Asia/Karachi', date_format: 'DD/MM/YYYY',
-  invoice_prefix: 'INV-', purchase_prefix: 'PO-', sales_prefix: 'SO-', employee_prefix: 'EMP-',
+  invoice_prefix: 'INV-', quotation_prefix: 'QT-', purchase_prefix: 'PO-', sales_prefix: 'SO-', employee_prefix: 'EMP-',
   tax_name: 'GST', tax_rate: '0', low_stock_alert: '10', fiscal_year_start: '01',
 }
 type Settings = typeof DEFAULTS
@@ -144,6 +144,7 @@ export default function SettingsPage() {
                 <div className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 sm:p-5">
                   {([
                     ['invoice_prefix', 'Invoices'],
+                    ['quotation_prefix', 'Quotations'],
                     ['sales_prefix', 'Sales orders'],
                     ['purchase_prefix', 'Purchase orders'],
                     ['employee_prefix', 'Employee codes'],

@@ -75,6 +75,11 @@ export const PERMISSION_RULES: PermissionRule[] = [
   // Customer dropdown is also used by Finance → Payments/Receipts
   { pattern: /^invoices\/customers$/, methods: ['GET'], modules: ['invoices', 'finance'], action: 'read' },
   { pattern: /^invoices\/[^/]+\/payment$/, modules: ['invoices'], action: 'modify' },
+  { pattern: /^invoices\/[^/]+\/cancel$/, modules: ['invoices'], action: 'delete' },
+  // Quotations: sales or invoice staff; turning one into an invoice needs invoice "write"
+  { pattern: /^quotations\/[^/]+\/convert$/, modules: ['invoices'], action: 'write' },
+  { pattern: /^quotations\/(customers|products)$/, methods: ['GET'], modules: ['sales', 'invoices'], action: 'read' },
+  { pattern: /^quotations(\/|$)/, modules: ['sales', 'invoices'] },
   { pattern: /^invoices(\/|$)/, modules: ['invoices'] },
 
   // ── Manufacturing ──

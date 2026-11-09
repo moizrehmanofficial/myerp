@@ -20,6 +20,7 @@ import { TenantAuditService } from './tenant-audit.service';
 import { TenantErpController } from './tenant-erp.controller';
 import { TenantSalarySlipService } from './tenant-salary-slip.service';
 import { TenantLeaveService } from './tenant-leave.service';
+import { TenantQuotationsService } from './tenant-quotations.service';
 
 @Global()
 @Module({
@@ -45,6 +46,7 @@ import { TenantLeaveService } from './tenant-leave.service';
     TenantAuditService,
     TenantSalarySlipService,
     TenantLeaveService,
+    TenantQuotationsService,
   ],
   exports: [
     TenantService,

@@ -85,14 +85,14 @@ export class TenantDashboardService {
            COUNT(CASE WHEN "paymentStatus" = 'UNPAID' THEN 1 END) as "unpaidCount",
            COUNT(CASE WHEN "paymentStatus" = 'PARTIAL' THEN 1 END) as "partialCount"
          FROM "invoices"
-         WHERE "isDeleted" = false`
+         WHERE "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED')`
       ),
 
       // Revenue this month
       safeQuery(
         `SELECT COALESCE(SUM("totalAmount"), 0) as revenue
          FROM "invoices"
-         WHERE "isDeleted" = false
+         WHERE "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED')
            AND EXTRACT(MONTH FROM "createdAt") = EXTRACT(MONTH FROM NOW())
            AND EXTRACT(YEAR FROM "createdAt") = EXTRACT(YEAR FROM NOW())`
       ),
@@ -101,7 +101,7 @@ export class TenantDashboardService {
       safeQuery(
         `SELECT COALESCE(SUM("dueAmount"), 0) as due
          FROM "invoices"
-         WHERE "isDeleted" = false AND "paymentStatus" != 'PAID'`
+         WHERE "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED') AND "paymentStatus" != 'PAID'`
       ),
 
       // Active employees
@@ -116,7 +116,7 @@ export class TenantDashboardService {
                 i."createdAt", c."name" as "customerName"
          FROM "invoices" i
          JOIN "customers" c ON i."customerId" = c."id"
-         WHERE i."isDeleted" = false
+         WHERE i."isDeleted" = false AND COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED')
          ORDER BY i."createdAt" DESC LIMIT 5`
       ),
 
@@ -138,7 +138,7 @@ export class TenantDashboardService {
          FROM "invoice_items" ii
          JOIN "products" p ON ii."productId" = p."id"
          JOIN "invoices" i ON ii."invoiceId" = i."id"
-         WHERE i."isDeleted" = false
+         WHERE i."isDeleted" = false AND COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED')
            AND EXTRACT(MONTH FROM i."createdAt") = EXTRACT(MONTH FROM NOW())
            AND EXTRACT(YEAR FROM i."createdAt") = EXTRACT(YEAR FROM NOW())
          GROUP BY p."id", p."name", p."sku"
@@ -153,7 +153,7 @@ export class TenantDashboardService {
            EXTRACT(YEAR FROM "createdAt") as "yearNum",
            COALESCE(SUM("totalAmount"), 0) as "revenue"
          FROM "invoices"
-         WHERE "isDeleted" = false
+         WHERE "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED')
            AND "createdAt" >= NOW() - INTERVAL '6 months'
          GROUP BY DATE_TRUNC('month', "createdAt"),
                   EXTRACT(MONTH FROM "createdAt"),

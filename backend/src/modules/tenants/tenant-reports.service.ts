@@ -23,7 +23,7 @@ export class TenantReportsService {
         COALESCE(SUM("paidAmount"), 0) as "totalCollected",
         COALESCE(SUM("dueAmount"), 0) as "totalDue"
        FROM "invoices"
-       WHERE "isDeleted" = false
+       WHERE "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED')
          AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp`,
       from, to,
     ) as any[];
@@ -31,7 +31,7 @@ export class TenantReportsService {
     const dailySales = await client.$queryRawUnsafe(
       `SELECT DATE("createdAt") as "date", COUNT(*) as "count", COALESCE(SUM("totalAmount"), 0) as "total"
        FROM "invoices"
-       WHERE "isDeleted" = false
+       WHERE "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED')
          AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp
        GROUP BY DATE("createdAt")
        ORDER BY "date" ASC`,
@@ -43,7 +43,7 @@ export class TenantReportsService {
        FROM "invoice_items" ii
        JOIN "products" p ON ii."productId" = p."id"
        JOIN "invoices" i ON ii."invoiceId" = i."id"
-       WHERE i."isDeleted" = false AND i."createdAt" >= $1::timestamp AND i."createdAt" <= $2::timestamp
+       WHERE i."isDeleted" = false AND COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED') AND i."createdAt" >= $1::timestamp AND i."createdAt" <= $2::timestamp
        GROUP BY p."id", p."name", p."sku"
        ORDER BY "totalRevenue" DESC
        LIMIT 10`,
@@ -54,7 +54,7 @@ export class TenantReportsService {
       `SELECT c."name", c."phone", COUNT(i."id") as "orderCount", SUM(i."totalAmount") as "totalSpent"
        FROM "invoices" i
        JOIN "customers" c ON i."customerId" = c."id"
-       WHERE i."isDeleted" = false AND i."createdAt" >= $1::timestamp AND i."createdAt" <= $2::timestamp
+       WHERE i."isDeleted" = false AND COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED') AND i."createdAt" >= $1::timestamp AND i."createdAt" <= $2::timestamp
        GROUP BY c."id", c."name", c."phone"
        ORDER BY "totalSpent" DESC
        LIMIT 10`,
@@ -215,6 +215,87 @@ export class TenantReportsService {
 
   // Balance sheet as of a date, from journal entries up to that date.
   // Current period profit is shown under equity so the sheet balances.
+  // Cash flow: money in and out of the cash and bank accounts.
+  // Every journal entry that touches cash/bank counts; its net effect on
+  // cash is grouped by where it came from (invoice payment, salary, ...).
+  // A move between cash and bank nets to zero and does not show.
+  async getCashFlow(slug: string, from: string, to: string) {
+    const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const toEnd = endOfDay(to);
+    const cashCodes = [ACC.CASH, ACC.BANK];
+
+    const accounts = (await client.$queryRawUnsafe(
+      `SELECT coa."id", coa."code", coa."name",
+              COALESCE(SUM(CASE WHEN je."createdAt" < $2::timestamp THEN ji."debit" - ji."credit" END), 0) AS "opening",
+              COALESCE(SUM(CASE WHEN je."createdAt" >= $2::timestamp AND je."createdAt" <= $3::timestamp THEN ji."debit" END), 0) AS "moneyIn",
+              COALESCE(SUM(CASE WHEN je."createdAt" >= $2::timestamp AND je."createdAt" <= $3::timestamp THEN ji."credit" END), 0) AS "moneyOut"
+       FROM "chart_of_accounts" coa
+       LEFT JOIN "journal_items" ji ON ji."accountId" = coa."id"
+       LEFT JOIN "journal_entries" je ON je."id" = ji."journalEntryId"
+       WHERE coa."code" = ANY($1::text[])
+       GROUP BY coa."id"
+       ORDER BY coa."code"`,
+      cashCodes, from, toEnd,
+    )) as any[];
+
+    const bySource = (await client.$queryRawUnsafe(
+      `SELECT COALESCE(t."sourceType", 'manual') AS "sourceType",
+              SUM(GREATEST(t."net", 0)) AS "moneyIn",
+              SUM(GREATEST(-t."net", 0)) AS "moneyOut",
+              COUNT(*) AS "entries"
+       FROM (
+         SELECT je."id", je."sourceType", SUM(ji."debit" - ji."credit") AS "net"
+         FROM "journal_entries" je
+         JOIN "journal_items" ji ON ji."journalEntryId" = je."id"
+         JOIN "chart_of_accounts" coa ON coa."id" = ji."accountId"
+         WHERE coa."code" = ANY($1::text[])
+           AND je."createdAt" >= $2::timestamp AND je."createdAt" <= $3::timestamp
+         GROUP BY je."id"
+       ) t
+       WHERE t."net" <> 0
+       GROUP BY 1
+       ORDER BY 1`,
+      cashCodes, from, toEnd,
+    )) as any[];
+
+    const daily = (await client.$queryRawUnsafe(
+      `SELECT to_char(je."createdAt"::date, 'YYYY-MM-DD') AS "day",
+              SUM(ji."debit") AS "moneyIn", SUM(ji."credit") AS "moneyOut"
+       FROM "journal_entries" je
+       JOIN "journal_items" ji ON ji."journalEntryId" = je."id"
+       JOIN "chart_of_accounts" coa ON coa."id" = ji."accountId"
+       WHERE coa."code" = ANY($1::text[])
+         AND je."createdAt" >= $2::timestamp AND je."createdAt" <= $3::timestamp
+       GROUP BY 1 ORDER BY 1`,
+      cashCodes, from, toEnd,
+    )) as any[];
+
+    const n = (v: any) => Math.round(Number(v || 0) * 100) / 100;
+    const accs = accounts.map((a: any) => {
+      const opening = n(a.opening);
+      const moneyIn = n(a.moneyIn);
+      const moneyOut = n(a.moneyOut);
+      return { id: a.id, code: a.code, name: a.name, opening, moneyIn, moneyOut, closing: n(opening + moneyIn - moneyOut) };
+    });
+    const sources = bySource.map((r: any) => ({ sourceType: r.sourceType, moneyIn: n(r.moneyIn), moneyOut: n(r.moneyOut), entries: Number(r.entries) }));
+    const opening = n(accs.reduce((s: number, a: any) => s + a.opening, 0));
+    const closing = n(accs.reduce((s: number, a: any) => s + a.closing, 0));
+    const totalIn = n(sources.reduce((s: number, r: any) => s + r.moneyIn, 0));
+    const totalOut = n(sources.reduce((s: number, r: any) => s + r.moneyOut, 0));
+
+    return {
+      success: true,
+      data: {
+        from, to,
+        opening, closing, totalIn, totalOut, net: n(totalIn - totalOut),
+        accounts: accs,
+        sources,
+        daily: daily.map((d: any) => ({ day: d.day, moneyIn: n(d.moneyIn), moneyOut: n(d.moneyOut) })),
+      },
+    };
+  }
+
   async getBalanceSheet(slug: string, asOf: string) {
     const client = await this.tenantService.getTenantClient(slug);
     await ensureTenantUpgrades(client, slug);
@@ -293,7 +374,7 @@ export class TenantReportsService {
         GREATEST(EXTRACT(DAY FROM ($1::timestamp - i."createdAt")), 0) as "ageDays"
        FROM "invoices" i
        JOIN "customers" c ON i."customerId" = c."id"
-       WHERE i."isDeleted" = false
+       WHERE i."isDeleted" = false AND COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED')
          AND i."paymentStatus" != 'PAID'
          AND i."dueAmount" > 0
          AND i."createdAt" <= $1::timestamp
@@ -401,7 +482,7 @@ export class TenantReportsService {
       `SELECT * FROM (
          SELECT 'INVOICE' AS "type", "invoiceNumber" AS "reference", "createdAt" AS "date",
                 "totalAmount" AS "debit", 0 AS "credit", 'Invoice' AS "details"
-         FROM "invoices" WHERE "customerId" = $1::uuid AND "isDeleted" = false
+         FROM "invoices" WHERE "customerId" = $1::uuid AND "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED')
          UNION ALL
          SELECT CASE WHEN "type" = 'RECEIPT' THEN 'RECEIPT' ELSE 'REFUND' END, "reference", "createdAt",
                 CASE WHEN "type" = 'PAYMENT' THEN "amount" ELSE 0 END,
@@ -566,7 +647,7 @@ export class TenantReportsService {
     to = endOfDay(to);
     const client = await this.tenantService.getTenantClient(slug);
 
-    let whereClause = `i."isDeleted" = false
+    let whereClause = `i."isDeleted" = false AND COALESCE(i."status", '') NOT IN ('DRAFT', 'CANCELLED')
       AND i."createdAt" >= $1::timestamp AND i."createdAt" <= $2::timestamp`;
     const params: any[] = [from, to];
 
@@ -594,7 +675,7 @@ export class TenantReportsService {
         COUNT(CASE WHEN "paymentStatus" = 'UNPAID' THEN 1 END) as "unpaidCount",
         COUNT(CASE WHEN "paymentStatus" = 'PARTIAL' THEN 1 END) as "partialCount"
        FROM "invoices"
-       WHERE "isDeleted" = false
+       WHERE "isDeleted" = false AND COALESCE("status", '') NOT IN ('DRAFT', 'CANCELLED')
          AND "createdAt" >= $1::timestamp AND "createdAt" <= $2::timestamp`,
       from, to,
     ) as any[];

@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -7,7 +8,9 @@ import { ConfigService } from '@nestjs/config';
 import { TenantService } from '../tenants/tenant.service';
 import { PrismaService } from '../../database/prisma.service';
 import * as bcrypt from 'bcrypt';
-import { createHash } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
+import { MailService } from '../../common/mail/mail.service';
+import { ensureTenantUpgrades } from '../tenants/tenant-doc.helper';
 import {
   TENANT_ACCESS_COOKIE,
   TENANT_REFRESH_COOKIE,
@@ -23,6 +26,7 @@ export class TenantAuthService {
     private tenantService: TenantService,
     private prisma: PrismaService,
     private auditService: TenantAuditService,
+    private mail: MailService,
   ) {}
 
   async login(slug: string, email: string, password: string, res: any) {
@@ -350,6 +354,110 @@ export class TenantAuthService {
         logoUrl: companyLogoUrl,
       },
     };
+  }
+
+  // ── Passwords ──────────────────────────────────────────
+
+  // Signed-in user changes their own password
+  async changePassword(slug: string, userId: string, current: string, next: string) {
+    if (String(next || '').length < 8) throw new BadRequestException('The new password must be at least 8 characters');
+    if (current === next) throw new BadRequestException('The new password must be different from the current one');
+    const client = await this.tenantService.getTenantClient(slug);
+    const users = (await client.$queryRawUnsafe(
+      `SELECT "id", "name", "password" FROM "users" WHERE "id" = $1::uuid AND "isDeleted" = false LIMIT 1`,
+      userId,
+    )) as any[];
+    if (!users.length) throw new UnauthorizedException('User not found');
+    if (!(await bcrypt.compare(String(current || ''), users[0].password))) {
+      throw new BadRequestException('Your current password is not correct');
+    }
+    await client.$queryRawUnsafe(
+      `UPDATE "users" SET "password" = $1, "updatedAt" = NOW() WHERE "id" = $2::uuid`,
+      await bcrypt.hash(next, 10),
+      userId,
+    );
+    await this.auditService.log(slug, { userId, userName: users[0].name, action: 'UPDATED', module: 'auth', description: 'Changed their password' });
+    return { success: true, message: 'Password changed' };
+  }
+
+  // Sends a one-hour reset link. Always answers the same way, so nobody can
+  // use this form to find out which emails have accounts.
+  async forgotPassword(slug: string, email: string) {
+    const generic = { success: true, message: 'If that email has an account, a reset link is on its way.' };
+    const e = String(email || '').trim().toLowerCase();
+    if (!e) return generic;
+    const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const users = (await client.$queryRawUnsafe(
+      `SELECT "id", "name", "email", "status" FROM "users" WHERE LOWER("email") = $1 AND "isDeleted" = false LIMIT 1`,
+      e,
+    )) as any[];
+    const user = users[0];
+    if (!user || user.status !== 'ACTIVE') return generic;
+
+    // At most 3 links per hour per person
+    const recent = (await client.$queryRawUnsafe(
+      `SELECT COUNT(*)::int AS n FROM "password_resets" WHERE "userId" = $1::uuid AND "createdAt" > NOW() - interval '1 hour'`,
+      user.id,
+    )) as any[];
+    if (Number(recent[0]?.n) >= 3) return generic;
+
+    const token = randomBytes(32).toString('hex');
+    await client.$queryRawUnsafe(
+      `INSERT INTO "password_resets" ("id", "userId", "tokenHash", "expiresAt")
+       VALUES (gen_random_uuid(), $1::uuid, $2, NOW() + interval '1 hour')`,
+      user.id,
+      this.hashToken(token),
+    );
+    const company = await this.prisma.company.findUnique({ where: { slug }, select: { name: true } });
+    const base = this.frontendUrl();
+    const url = `${base}/reset-password?company=${encodeURIComponent(slug)}&token=${token}`;
+    await this.mail.send(
+      user.email,
+      `Reset your ${company?.name || 'MyERP'} password`,
+      'Reset your password',
+      [
+        `Hi ${user.name},`,
+        `Someone asked to reset the password for your ${company?.name || 'MyERP'} account. If it was you, use the button below. The link works for one hour and only once.`,
+        'If you did not ask for this, you can ignore this email. Your password stays the same.',
+      ],
+      { label: 'Choose a new password', url },
+    );
+    await this.auditService.log(slug, { userId: user.id, userName: user.name, action: 'UPDATED', module: 'auth', description: 'Asked for a password reset link' });
+    return generic;
+  }
+
+  async resetPassword(slug: string, token: string, password: string) {
+    if (String(password || '').length < 8) throw new BadRequestException('The new password must be at least 8 characters');
+    if (!/^[a-f0-9]{64}$/.test(String(token || ''))) throw new BadRequestException('This reset link is not valid');
+    const client = await this.tenantService.getTenantClient(slug);
+    await ensureTenantUpgrades(client, slug);
+    const rows = (await client.$queryRawUnsafe(
+      `SELECT pr."id", pr."userId", u."name" FROM "password_resets" pr
+       JOIN "users" u ON u."id" = pr."userId"
+       WHERE pr."tokenHash" = $1 AND pr."usedAt" IS NULL AND pr."expiresAt" > NOW()
+         AND u."isDeleted" = false AND u."status" = 'ACTIVE'
+       LIMIT 1`,
+      this.hashToken(token),
+    )) as any[];
+    if (!rows.length) throw new BadRequestException('This reset link has expired or was already used. Ask for a new one.');
+    const r = rows[0];
+    await client.$transaction(async (tx: any) => {
+      await tx.$queryRawUnsafe(
+        `UPDATE "users" SET "password" = $1, "refreshToken" = NULL, "updatedAt" = NOW() WHERE "id" = $2::uuid`,
+        await bcrypt.hash(password, 10),
+        r.userId,
+      );
+      // This link and any other open links for the person stop working
+      await tx.$queryRawUnsafe(`UPDATE "password_resets" SET "usedAt" = NOW() WHERE "userId" = $1::uuid AND "usedAt" IS NULL`, r.userId);
+    });
+    await this.auditService.log(slug, { userId: r.userId, userName: r.name, action: 'UPDATED', module: 'auth', description: 'Reset their password with an email link' });
+    return { success: true, message: 'Password changed. You can sign in now.' };
+  }
+
+  private frontendUrl() {
+    const first = (this.configService.get<string>('FRONTEND_URL') || '').split(',')[0].trim();
+    return (first || 'https://myerp-frontend.vercel.app').replace(/\/$/, '');
   }
 
   async getCompanyInfo(slug: string) {

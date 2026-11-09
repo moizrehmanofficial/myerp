@@ -4,7 +4,8 @@ import Link from 'next/link'
 import { useState } from 'react'
 import { useCompanyHref } from '@/lib/useCompanyHref'
 import axios from 'axios'
-import { Building2, ChevronDown, ChevronsLeft, ChevronsRight, LogOut, X } from 'lucide-react'
+import { Building2, ChevronDown, ChevronsLeft, ChevronsRight, KeyRound, LogOut, X } from 'lucide-react'
+import ChangePasswordModal from '@/components/auth/ChangePasswordModal'
 import { cn } from '@/utils/utils'
 import { TENANT_NAV, ALWAYS_VISIBLE, type NavGroup } from './tenantNav'
 
@@ -33,6 +34,7 @@ export default function TenantSidebar({
   const groups = TENANT_NAV.filter((g) => ALWAYS_VISIBLE.includes(g.moduleKey) || moduleKeys.includes(g.moduleKey))
 
   // The group that contains the current page starts open
+  const [pwOpen, setPwOpen] = useState(false)
   const [open, setOpen] = useState<Record<string, boolean>>(() => {
     const o: Record<string, boolean> = {}
     TENANT_NAV.forEach((g) => {
@@ -212,6 +214,15 @@ export default function TenantSidebar({
           )}
           <button
             type="button"
+            onClick={() => setPwOpen(true)}
+            className="rounded-md p-2 text-nav-muted hover:bg-nav-hover hover:text-white"
+            aria-label="Change password"
+            title="Change password"
+          >
+            <KeyRound className="size-[18px]" strokeWidth={1.8} />
+          </button>
+          <button
+            type="button"
             onClick={handleLogout}
             className="rounded-md p-2 text-nav-muted hover:bg-nav-hover hover:text-white"
             aria-label="Sign out"
@@ -221,6 +232,7 @@ export default function TenantSidebar({
           </button>
         </div>
       </aside>
+      <ChangePasswordModal open={pwOpen} onClose={() => setPwOpen(false)} />
     </>
   )
 }

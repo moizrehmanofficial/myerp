@@ -23,12 +23,13 @@ export function Badge({ tone = 'neutral', className, children }: { tone?: Tone; 
 const STATUS_TONES: Record<string, Tone> = {
   PAID: 'good', RECEIVED: 'good', DELIVERED: 'good', COMPLETED: 'good', ACTIVE: 'good', APPROVED: 'good', PRESENT: 'good',
   PARTIAL: 'warn', PENDING: 'warn', IN_PROGRESS: 'warn', LATE: 'warn', DRAFT: 'neutral', ORDERED: 'info', CONFIRMED: 'info', SHIPPED: 'info',
+  SENT: 'info', ACCEPTED: 'good', CONVERTED: 'brand', EXPIRED: 'warn',
   UNPAID: 'bad', OVERDUE: 'bad', CANCELLED: 'bad', REJECTED: 'bad', SUSPENDED: 'bad', INACTIVE: 'neutral', ABSENT: 'bad',
 }
 
 export function StatusBadge({ status }: { status?: string | null }) {
   const s = String(status || '').toUpperCase()
   if (!s) return null
-  const label = s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, ' ')
+  const label = s === 'CONVERTED' ? 'Invoiced' : s.charAt(0) + s.slice(1).toLowerCase().replace(/_/g, ' ')
   return <Badge tone={STATUS_TONES[s] || 'neutral'}>{label}</Badge>
 }

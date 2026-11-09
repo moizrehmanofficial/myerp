@@ -4,9 +4,9 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 const ALLOWED = [
   'company_name', 'company_email', 'company_phone', 'company_address', 'company_currency',
   'company_timezone', 'date_format', 'invoice_prefix', 'purchase_prefix', 'sales_prefix',
-  'employee_prefix', 'tax_name', 'tax_rate', 'low_stock_alert', 'fiscal_year_start',
+  'employee_prefix', 'quotation_prefix', 'tax_name', 'tax_rate', 'low_stock_alert', 'fiscal_year_start',
 ];
-const PREFIXES = ['invoice_prefix', 'purchase_prefix', 'sales_prefix', 'employee_prefix'];
+const PREFIXES = ['invoice_prefix', 'purchase_prefix', 'sales_prefix', 'employee_prefix', 'quotation_prefix'];
 import { TenantService } from './tenant.service';
 
 @Injectable()

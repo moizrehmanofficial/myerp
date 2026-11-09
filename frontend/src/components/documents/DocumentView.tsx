@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
-import { ArrowLeft, Banknote, PackageCheck, Pencil, Printer } from 'lucide-react'
+import { ArrowLeft, Ban, Banknote, Check, FileOutput, PackageCheck, Pencil, Printer, Send, X } from 'lucide-react'
 import TenantLayout from '@/components/layout/TenantLayout'
 import { Button, Card, Field, Input, Select, Textarea, Modal, Table, TableWrap, Th, Td, Tr, Spinner, EmptyState, StatusBadge, useConfirm, buttonStyles } from '@/components/ui'
 import { usePermission } from '@/hooks/usePermission'
@@ -12,11 +13,13 @@ import { money, number, date } from '@/lib/format'
 import { useCompanyHref } from '@/lib/useCompanyHref'
 import { getTenantSlug } from '@/lib/getTenantSlug'
 import type { DocKind } from './DocumentEditor'
+import { invoiceState, quotationState } from './docStatus'
 
 const CONFIG = {
   invoice: { module: 'invoices', url: '/erp/invoices', label: 'Invoice', numberKey: 'invoiceNumber', party: 'Bill to', prefix: 'customer' },
   sales: { module: 'sales', url: '/erp/sales/orders', label: 'Sales order', numberKey: 'orderNumber', party: 'Customer', prefix: 'customer' },
   purchase: { module: 'purchase', url: '/erp/purchase/orders', label: 'Purchase order', numberKey: 'orderNumber', party: 'Supplier', prefix: 'supplier' },
+  quotation: { module: 'sales', url: '/erp/quotations', label: 'Quotation', numberKey: 'quotationNumber', party: 'Prepared for', prefix: 'customer' },
 }
 
 const SALES_STATUSES = ['PENDING', 'CONFIRMED', 'PROCESSING', 'DELIVERED', 'CANCELLED']
@@ -30,13 +33,15 @@ const PURCHASE_STATUSES = [
 export default function DocumentView({ kind, id }: { kind: DocKind; id: string }) {
   const c = CONFIG[kind]
   const href = useCompanyHref()
+  const router = useRouter()
   const [doc, setDoc] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [companyName, setCompanyName] = useState('')
   const [payOpen, setPayOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [cancelOpen, setCancelOpen] = useState(false)
   const [confirm, confirmDialog] = useConfirm()
-  const { canModify, canPrint } = usePermission()
+  const { canModify, canWrite, canDelete, canPrint } = usePermission()
 
   const load = useCallback(async () => {
     try {
@@ -82,6 +87,57 @@ export default function DocumentView({ kind, id }: { kind: DocKind; id: string }
     }
   }
 
+  // Draft invoice → real invoice (stock leaves, accounts posted)
+  async function issue() {
+    const ok = await confirm({
+      title: `Issue ${doc.invoiceNumber}?`,
+      message: 'Stock is taken out and the sale is recorded in the accounts. The invoice date becomes today.',
+      confirmLabel: 'Issue invoice',
+    })
+    if (!ok) return
+    setBusy(true)
+    try {
+      await tenantApi.patch(`/erp/invoices/${id}/issue`)
+      toast.success(`${doc.invoiceNumber} issued`)
+      load()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not issue the invoice.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function quoteStatus(status: string, label: string) {
+    setBusy(true)
+    try {
+      await tenantApi.patch(`/erp/quotations/${id}/status`, { status })
+      toast.success(`Marked ${label}`)
+      load()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not change the status.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function convert() {
+    const ok = await confirm({
+      title: `Turn ${doc.quotationNumber} into an invoice?`,
+      message: 'A draft invoice is created with the same items and prices. Stock and accounts change only when you issue it.',
+      confirmLabel: 'Create draft invoice',
+    })
+    if (!ok) return
+    setBusy(true)
+    try {
+      const res = await tenantApi.post(`/erp/quotations/${id}/convert`)
+      toast.success(res.data?.message || 'Draft invoice created')
+      router.push(href(`/erp/invoices/${res.data.data.id}`))
+    } catch (err) {
+      toast.error(apiError(err, 'Could not create the invoice.'))
+      setBusy(false)
+    }
+  }
+
   if (loading) {
     return (
       <TenantLayout title={c.label} requiredModule={c.module}>
@@ -115,7 +171,11 @@ export default function DocumentView({ kind, id }: { kind: DocKind; id: string }
   const hasLineDiscount = kind !== 'purchase'
   const itemsTotal = items.reduce((s, it) => s + Number(it.totalPrice || 0), 0)
   const due = Number(doc.dueAmount || 0)
-  const status = kind === 'invoice' ? doc.paymentStatus : doc.status
+  const status = kind === 'invoice' ? invoiceState(doc) : kind === 'quotation' ? quotationState(doc) : doc.status
+  const isDraft = kind === 'invoice' && doc.status === 'DRAFT'
+  const isCancelled = kind === 'invoice' && doc.status === 'CANCELLED'
+  const qs: string = kind === 'quotation' ? doc.status : ''
+  const quoteOpen = kind === 'quotation' && qs !== 'CONVERTED' && qs !== 'REJECTED'
 
   return (
     <TenantLayout
@@ -126,20 +186,30 @@ export default function DocumentView({ kind, id }: { kind: DocKind; id: string }
         <>
           <Link href={href(c.url)} className={buttonStyles({ variant: 'ghost' })}>
             <ArrowLeft className="size-4" aria-hidden />
-            All {kind === 'invoice' ? 'invoices' : 'orders'}
+            All {kind === 'invoice' ? 'invoices' : kind === 'quotation' ? 'quotations' : 'orders'}
           </Link>
           {canPrint(c.module) && (
             <Button variant="secondary" icon={<Printer className="size-4" />} onClick={() => window.print()}>
               Print
             </Button>
           )}
-          {kind === 'invoice' && canModify('invoices') && (
+          {((kind === 'invoice' && !isCancelled) || (kind === 'quotation' && qs !== 'CONVERTED')) && canModify(c.module) && (
             <Link href={href(`${c.url}/${id}/edit`)} className={buttonStyles({ variant: 'secondary' })}>
               <Pencil className="size-4" aria-hidden />
               Edit
             </Link>
           )}
-          {kind === 'invoice' && due > 0 && canModify('invoices') && (
+          {isDraft && canModify('invoices') && (
+            <Button icon={<Check className="size-4" />} onClick={issue} loading={busy}>
+              Issue invoice
+            </Button>
+          )}
+          {quoteOpen && canWrite('invoices') && (
+            <Button icon={<FileOutput className="size-4" />} onClick={convert} loading={busy}>
+              Turn into invoice
+            </Button>
+          )}
+          {kind === 'invoice' && !isDraft && !isCancelled && due > 0 && canModify('invoices') && (
             <Button icon={<Banknote className="size-4" />} onClick={() => setPayOpen(true)}>
               Record payment
             </Button>
@@ -158,13 +228,19 @@ export default function DocumentView({ kind, id }: { kind: DocKind; id: string }
           <div className="flex flex-col gap-6 border-b border-line p-5 sm:flex-row sm:justify-between sm:p-7">
             <div>
               <p className="text-lg font-semibold text-ink capitalize">{companyName || getTenantSlug()}</p>
-              <p className="mt-0.5 text-[13px] text-ink-3">{c.label}</p>
+              <p className="mt-0.5 text-[13px] text-ink-3">{isDraft ? 'Draft invoice' : isCancelled ? 'Invoice (cancelled)' : c.label}</p>
             </div>
             <dl className="grid grid-cols-[auto_auto] gap-x-6 gap-y-1 text-sm sm:text-right">
               <dt className="text-ink-3">Number</dt>
               <dd className="font-medium">{doc[c.numberKey]}</dd>
               <dt className="text-ink-3">Date</dt>
               <dd>{date(doc.createdAt)}</dd>
+              {kind === 'quotation' && doc.validUntil && (
+                <>
+                  <dt className="text-ink-3">Valid until</dt>
+                  <dd>{date(doc.validUntil)}</dd>
+                </>
+              )}
               {doc.dueDate && (
                 <>
                   <dt className="text-ink-3">Due by</dt>
@@ -234,7 +310,7 @@ export default function DocumentView({ kind, id }: { kind: DocKind; id: string }
                 <dt className="font-semibold">Total</dt>
                 <dd className="num text-lg font-semibold">{money(doc.totalAmount)}</dd>
               </div>
-              {kind === 'invoice' && (
+ {kind === 'invoice' && !isDraft && !isCancelled && (
                 <>
                   <Line label="Received" value={money(doc.paidAmount)} />
                   <div className="flex justify-between">
@@ -249,7 +325,52 @@ export default function DocumentView({ kind, id }: { kind: DocKind; id: string }
 
         {/* Side panel (not printed) */}
         <div className="flex flex-col gap-5 print:hidden">
-          {kind !== 'invoice' && canModify(c.module) && (
+          {isDraft && (
+            <Card className="p-4 text-sm text-ink-2">
+              This is a draft. It does not change stock or the accounts until you issue it.
+            </Card>
+          )}
+          {isCancelled && (
+            <Card className="p-4 text-sm text-ink-2">
+              <p className="font-medium text-bad">Cancelled</p>
+              <p className="mt-1">Stock was put back and the sale reversed in the accounts. Any money received is kept as the customer’s credit.</p>
+            </Card>
+          )}
+          {kind === 'invoice' && !isDraft && !isCancelled && canDelete('invoices') && (
+            <Card className="p-4 text-sm text-ink-2">
+              <p>Made a mistake on an issued invoice? Cancel it to keep it on file with its number.</p>
+              <Button size="sm" variant="danger-soft" className="mt-3" icon={<Ban className="size-3.5" />} onClick={() => setCancelOpen(true)}>
+                Cancel invoice
+              </Button>
+            </Card>
+          )}
+          {kind === 'quotation' && (
+            <Card className="p-4 text-sm">
+              {qs === 'CONVERTED' ? (
+                <p className="text-ink-2">
+                  Turned into invoice{' '}
+                  {doc.invoiceId ? (
+                    <Link href={href(`/erp/invoices/${doc.invoiceId}`)} className="font-medium text-brand hover:text-brand-hover">{doc.invoiceNumber || 'invoice'}</Link>
+                  ) : (
+                    doc.invoiceNumber
+                  )}
+                  .
+                </p>
+              ) : canModify('sales') ? (
+                <>
+                  <p className="font-medium text-ink">Where is this quotation?</p>
+                  <p className="mt-0.5 text-ink-3">Keep track of the customer’s answer.</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {qs === 'DRAFT' && <Button size="sm" variant="secondary" icon={<Send className="size-3.5" />} disabled={busy} onClick={() => quoteStatus('SENT', 'sent')}>Mark sent</Button>}
+                    {qs !== 'ACCEPTED' && <Button size="sm" variant="secondary" icon={<Check className="size-3.5" />} disabled={busy} onClick={() => quoteStatus('ACCEPTED', 'accepted')}>Accepted</Button>}
+                    {qs !== 'REJECTED' && <Button size="sm" variant="ghost" icon={<X className="size-3.5" />} disabled={busy} onClick={() => quoteStatus('REJECTED', 'rejected')}>Rejected</Button>}
+                    {qs === 'REJECTED' && <Button size="sm" variant="secondary" disabled={busy} onClick={() => quoteStatus('DRAFT', 'draft')}>Reopen</Button>}
+                  </div>
+                </>
+              ) : null}
+            </Card>
+          )}
+          {(kind === 'sales' || kind === 'purchase') && canModify(c.module) && (
             <Card className="p-4">
               <Field label="Status" hint={kind === 'sales' ? 'Sales orders do not change stock. Create an invoice to sell.' : 'Received adds stock. Moving away from received removes it.'}>
                 {(fid) => (
@@ -274,7 +395,10 @@ export default function DocumentView({ kind, id }: { kind: DocKind; id: string }
       </div>
 
       {kind === 'invoice' && (
-        <PaymentModal open={payOpen} onClose={() => setPayOpen(false)} invoice={doc} onDone={load} />
+        <>
+          <PaymentModal open={payOpen} onClose={() => setPayOpen(false)} invoice={doc} onDone={load} />
+          <CancelModal open={cancelOpen} onClose={() => setCancelOpen(false)} invoice={doc} onDone={load} />
+        </>
       )}
       {confirmDialog}
     </TenantLayout>
@@ -356,6 +480,56 @@ function PaymentModal({ open, onClose, invoice, onDone }: { open: boolean; onClo
           {(id) => <Textarea id={id} rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />}
         </Field>
       </form>
+    </Modal>
+  )
+}
+
+function CancelModal({ open, onClose, invoice, onDone }: { open: boolean; onClose: () => void; invoice: any; onDone: () => void }) {
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const paid = Number(invoice?.paidAmount || 0)
+
+  useEffect(() => {
+    if (open) setReason('')
+  }, [open])
+
+  async function save() {
+    setSaving(true)
+    try {
+      await tenantApi.patch(`/erp/invoices/${invoice.id}/cancel`, { reason })
+      toast.success(`${invoice.invoiceNumber} cancelled`)
+      onDone()
+      onClose()
+    } catch (err) {
+      toast.error(apiError(err, 'Could not cancel the invoice.'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title={`Cancel ${invoice?.invoiceNumber}?`}
+      description="The invoice stays on file, marked cancelled."
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Keep invoice</Button>
+          <Button variant="danger" onClick={save} loading={saving}>Cancel invoice</Button>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-4 text-sm text-ink-2">
+        <ul className="list-disc space-y-1 pl-5">
+          <li>Items go back into stock.</li>
+          <li>The sale is reversed in the accounts.</li>
+          {paid > 0 && <li>{money(paid)} already received stays as the customer’s credit.</li>}
+        </ul>
+        <Field label="Reason" hint="Optional. Added to the invoice notes.">
+          {(fid) => <Textarea id={fid} rows={2} value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />}
+        </Field>
+      </div>
     </Modal>
   )
 }

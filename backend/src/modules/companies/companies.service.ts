@@ -10,6 +10,7 @@ import { UpdateCompanyDto } from './dto/update-company.dto';
 import * as bcrypt from 'bcrypt';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { ConfigService } from '@nestjs/config';
+import { MailService } from '../../common/mail/mail.service';
 
 @Injectable()
 export class CompaniesService {
@@ -17,6 +18,7 @@ export class CompaniesService {
     private prisma: PrismaService,
     private tenantService: TenantService,
     private configService: ConfigService,
+    private mail: MailService,
   ) {}
 
   async findAll(page = 1, limit = 25) {
@@ -174,7 +176,20 @@ export class CompaniesService {
       throw err;
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'https://myerp-frontend.vercel.app';
+    const frontendUrl = ((process.env.FRONTEND_URL || '').split(',')[0].trim() || 'https://myerp-frontend.vercel.app').replace(/\/$/, '');
+
+    // Welcome email to the owner. The password is NOT emailed; the admin
+    // shares it privately, or the owner uses "Forgot password".
+    const welcomeSent = await this.mail.send(
+      dto.ceoEmail,
+      `Your ${dto.name} workspace on MyERP is ready`,
+      `Welcome to MyERP, ${dto.ceoName}`,
+      [
+        `Your company workspace "${dto.name}" has been created. You are its owner, so you can add your team and choose what each person can do.`,
+        `Sign in with this email address (${dto.ceoEmail}). Your administrator will give you the password, or you can set one yourself with "Forgot password" on the sign-in page.`,
+      ],
+      { label: 'Open your workspace', url: `${frontendUrl}/erp-login?company=${dto.slug}` },
+    );
 
     return {
       success: true,
@@ -184,6 +199,7 @@ export class CompaniesService {
         erpUrl: `${frontendUrl}/erp-login?company=${dto.slug}`,
         ceoEmail: dto.ceoEmail,
         modulesEnabled: modules.length,
+        welcomeEmailSent: welcomeSent,
       },
     };
   }

@@ -117,8 +117,12 @@ export default function UsersRolesPage() {
     setSavingUser(true)
     try {
       if (editingUser) await tenantApi.put(`/erp/users/list/${editingUser.id}`, userForm)
-      else await tenantApi.post('/erp/users/list', { ...userForm, email: userForm.email.trim() })
-      toast.success(editingUser ? 'Changes saved' : `${userForm.name.trim()} can now sign in`)
+      let emailed = false
+      if (!editingUser) {
+        const r = await tenantApi.post('/erp/users/list', { ...userForm, email: userForm.email.trim() })
+        emailed = !!r.data.data?.emailSent
+      }
+      toast.success(editingUser ? 'Changes saved' : `${userForm.name.trim()} can now sign in${emailed ? '. We emailed them the sign-in link.' : ''}`)
       setShowUser(false)
       load()
     } catch (err) {

@@ -34,6 +34,7 @@ import { TenantSettingsService } from './tenant-settings.service';
 import { TenantUsersService } from './tenant-users.service';
 import { TenantReturnsService } from './tenant-returns.service';
 import { TenantManufacturingService } from './tenant-manufacturing.service';
+import { TenantQuotationsService } from './tenant-quotations.service';
 import { TenantAuditService } from './tenant-audit.service';
 import { TenantSalarySlipService } from './tenant-salary-slip.service';
 import { TenantLeaveService } from './tenant-leave.service';
@@ -60,6 +61,7 @@ export class TenantErpController {
     private usersService: TenantUsersService,
     private returnsService: TenantReturnsService,
     private manufacturingService: TenantManufacturingService,
+    private quotationsService: TenantQuotationsService,
     private auditService: TenantAuditService,
     private salarySlipService: TenantSalarySlipService,
     private leaveService: TenantLeaveService,
@@ -627,10 +629,18 @@ export class TenantErpController {
     @Query('page') page = '1',
     @Query('limit') limit = '25',
     @Query('search') search = '',
+    @Query('department') department = '',
   ) {
     const payload = this.getPayload(req);
     const slug = this.getSlug(req, payload);
-    return this.hrService.getEmployees(slug, +page, +limit, search);
+    return this.hrService.getEmployees(slug, +page, +limit, search, department);
+  }
+
+  @Get('hr/departments')
+  async getDepartments(@Req() req: any) {
+    const payload = this.getPayload(req);
+    const slug = this.getSlug(req, payload);
+    return this.hrService.getDepartments(slug);
   }
 
   @Get('hr/employees/:id')
@@ -854,6 +864,13 @@ export class TenantErpController {
     const payload = this.getPayload(req);
     const slug = this.getSlug(req, payload);
     return this.reportsService.getStockReport(slug);
+  }
+
+  @Get('reports/cash-flow')
+  async getCashFlow(@Req() req: any, @Query('from') from: string, @Query('to') to: string) {
+    const payload = this.getPayload(req);
+    const slug = this.getSlug(req, payload);
+    return this.reportsService.getCashFlow(slug, from, to);
   }
 
   @Get('reports/profit-loss')
@@ -1182,16 +1199,84 @@ export class TenantErpController {
 
 
   // ── INVOICES ──────────────────────────────────────────
+  // ── QUOTATIONS ────────────────────────────────────────
+  @Get('quotations')
+  async getQuotations(
+    @Req() req: any,
+    @Query('page') page = '1',
+    @Query('limit') limit = '25',
+    @Query('search') search = '',
+    @Query('status') status = '',
+  ) {
+    const slug = this.getSlug(req, this.getPayload(req));
+    return this.quotationsService.findAll(slug, +page, +limit, search, status);
+  }
+
+  @Get('quotations/customers')
+  async getQuotationCustomers(@Req() req: any) {
+    return this.invoicesService.getCustomers(this.getSlug(req, this.getPayload(req)));
+  }
+
+  @Get('quotations/products')
+  async getQuotationProducts(@Req() req: any) {
+    return this.invoicesService.getProducts(this.getSlug(req, this.getPayload(req)));
+  }
+
+  @Get('quotations/:id')
+  async getQuotation(@Req() req: any, @Param('id') id: string) {
+    return this.quotationsService.findOne(this.getSlug(req, this.getPayload(req)), id);
+  }
+
+  @Post('quotations')
+  async createQuotation(@Req() req: any, @Body() body: any) {
+    return this.quotationsService.create(this.getSlug(req, this.getPayload(req)), body);
+  }
+
+  @Put('quotations/:id')
+  async updateQuotation(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    return this.quotationsService.update(this.getSlug(req, this.getPayload(req)), id, body);
+  }
+
+  @Patch('quotations/:id/status')
+  async setQuotationStatus(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    return this.quotationsService.setStatus(this.getSlug(req, this.getPayload(req)), id, body?.status);
+  }
+
+  @Post('quotations/:id/convert')
+  async convertQuotation(@Req() req: any, @Param('id') id: string) {
+    return this.quotationsService.convert(this.getSlug(req, this.getPayload(req)), id);
+  }
+
+  @Delete('quotations/:id')
+  async deleteQuotation(@Req() req: any, @Param('id') id: string) {
+    return this.quotationsService.remove(this.getSlug(req, this.getPayload(req)), id);
+  }
+
   @Get('invoices')
   async getInvoices(
     @Req() req: any,
     @Query('page') page = '1',
     @Query('limit') limit = '25',
     @Query('search') search = '',
+    @Query('status') status = '',
   ) {
     const payload = this.getPayload(req);
     const slug = this.getSlug(req, payload);
-    return this.invoicesService.findAll(slug, +page, +limit, search);
+    return this.invoicesService.findAll(slug, +page, +limit, search, status);
+  }
+
+  @Patch('invoices/:id/issue')
+  async issueInvoice(@Req() req: any, @Param('id') id: string) {
+    const payload = this.getPayload(req);
+    const slug = this.getSlug(req, payload);
+    return this.invoicesService.issue(slug, id);
+  }
+
+  @Patch('invoices/:id/cancel')
+  async cancelInvoice(@Req() req: any, @Param('id') id: string, @Body() body: any) {
+    const payload = this.getPayload(req);
+    const slug = this.getSlug(req, payload);
+    return this.invoicesService.cancel(slug, id, body);
   }
 
   @Get('invoices/customers')

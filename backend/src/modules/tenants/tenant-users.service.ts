@@ -2,12 +2,16 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { TenantService } from './tenant.service';
 import { TenantAuditService } from './tenant-audit.service';
 import * as bcrypt from 'bcrypt';
+import { MailService } from '../../common/mail/mail.service';
+import { PrismaService } from '../../database/prisma.service';
 
 @Injectable()
 export class TenantUsersService {
   constructor(
     private tenantService: TenantService,
     private auditService: TenantAuditService,
+    private mail: MailService,
+    private prisma: PrismaService,
   ) {}
 
   // ── ROLES ─────────────────────────────────────────────
@@ -179,7 +183,21 @@ export class TenantUsersService {
       description: `User ${body.email} created`,
     });
 
-    return { success: true, message: 'User created successfully', data: result[0] };
+    // Tell the new person how to sign in (the password is shared by the owner)
+    const company = await this.prisma.company.findUnique({ where: { slug }, select: { name: true } }).catch(() => null);
+    const base = ((process.env.FRONTEND_URL || '').split(',')[0].trim() || 'https://myerp-frontend.vercel.app').replace(/\/$/, '');
+    const emailSent = await this.mail.send(
+      body.email,
+      `You have been added to ${company?.name || 'a company'} on MyERP`,
+      `Welcome, ${body.name}`,
+      [
+        `You now have an account in ${company?.name || 'your company'}'s MyERP workspace.`,
+        `Sign in with ${body.email}. The person who added you will give you the password, or you can set your own with "Forgot password" on the sign-in page.`,
+      ],
+      { label: 'Go to sign in', url: `${base}/erp-login?company=${encodeURIComponent(slug)}` },
+    );
+
+    return { success: true, message: 'User created successfully', data: { ...result[0], emailSent } };
   }
 
   async updateUser(slug: string, id: string, body: any) {

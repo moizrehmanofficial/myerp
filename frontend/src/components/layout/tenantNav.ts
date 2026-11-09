@@ -24,6 +24,7 @@ export const TENANT_NAV: NavGroup[] = [
   {
     key: 'sales', moduleKey: 'sales', label: 'Sales', icon: Truck,
     children: [
+      { label: 'Quotations', path: '/erp/quotations' },
       { label: 'Sales orders', path: '/erp/sales/orders' },
       { label: 'Sale returns', path: '/erp/sales/returns' },
     ],
@@ -84,6 +85,7 @@ export const TENANT_NAV: NavGroup[] = [
     children: [
       { label: 'Profit & loss', path: '/erp/reports/profit-loss' },
       { label: 'Balance sheet', path: '/erp/reports/balance-sheet' },
+      { label: 'Cash flow', path: '/erp/reports/cash-flow' },
       { label: 'Sales', path: '/erp/reports/sales' },
       { label: 'Purchases', path: '/erp/reports/purchase' },
       { label: 'Invoices', path: '/erp/reports/invoices' },
